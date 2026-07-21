@@ -780,7 +780,7 @@ static int perm_mode   = 0;   // -p: prefix with perm (1=array, 2=cycle)
 static int filter_mode = 0;
 static int filter_conj_mode = 0; // -F: drop sequences whose first/last moves are inverse face moves
 static int g_mode      = 0;   // -g: greedy expansion via face-move conjugation
-static long long d_multiplier = 0; // -d #: collapse cost to single int
+static long long d_multiplier = -1; // -1 = not set; 0 = unit cost (emit 1); >0 = collapse multiplier
 static long long max_cost_filter = -1; // -m N: skip algorithms with collapsed cost > N
 
 // Priority queue entry for -g mode.
@@ -841,6 +841,8 @@ static int build_prefix(char *buf, int bufsz, const Perm *perm,
     if (cost_mode) {
         if (d_multiplier > 0)
             n += snprintf(buf + n, bufsz - n, "%lld ", collapse_cost(v, h, o, c, d_multiplier));
+        else if (d_multiplier == 0)
+            n += snprintf(buf + n, bufsz - n, "1 ");
         else
             n += snprintf(buf + n, bufsz - n, "%d %d %d %d ", v, h, o, c);
     }
@@ -1140,7 +1142,7 @@ int main(int argc, char *argv[]) {
         if (g_mode) {
             int cv = 0, ch = 0, co = 0, cc = 0;
             compute_cost(line_tokens, cv, ch, co, cc);
-            long long g_d = d_multiplier > 0 ? d_multiplier : 100LL;
+            long long g_d = d_multiplier > 0 ? d_multiplier : (d_multiplier == 0 ? 1LL : 100LL);
             GEntry e;
             e.sort_cost = collapse_cost(cv, ch, co, cc, g_d);
             e.v = cv; e.h = ch; e.o = co; e.c = cc;
@@ -1158,7 +1160,7 @@ int main(int argc, char *argv[]) {
         int cv = 0, ch = 0, co = 0, cc = 0;
         if (cost_mode || max_cost_filter >= 0) compute_cost(line_tokens, cv, ch, co, cc);
         if (max_cost_filter >= 0) {
-            long long d = d_multiplier > 0 ? d_multiplier : 1000LL;
+            long long d = d_multiplier > 0 ? d_multiplier : (d_multiplier == 0 ? 1LL : 1000LL);
             if (collapse_cost(cv, ch, co, cc, d) > max_cost_filter) continue;
         }
         int  sz = S_mode ? class_size(centers_state) : 0;
