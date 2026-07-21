@@ -328,6 +328,16 @@ static bool valid_perm(const std::vector<uint8_t>& p) {
 }
 
 
+// Returns true when the first non-whitespace character at or after pos is '('.
+// Used to distinguish a small cost prefix from image-form permutation values:
+// image notation is all space-separated integers with no parentheses, so a
+// leading integer followed by '(' must be a cost prefix in cycle notation.
+static bool next_nonspace_is_paren(const std::string& s, size_t pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos])))
+        ++pos;
+    return pos < s.size() && s[pos] == '(';
+}
+
 // Reads just the optional leading cost.  Since the input is sorted by cost,
 // this lets -m stop before parsing or caching unnecessary candidates.
 static bool leading_cost_value(const std::string& raw,
@@ -350,7 +360,8 @@ static bool leading_cost_value(const std::string& raw,
         if (!neg) {
             uint64_t first = std::stoull(line.substr(start_digits,
                 scan - start_digits));
-            if (first > static_cast<uint64_t>(n)) {
+            if (first > static_cast<uint64_t>(n) ||
+                    next_nonspace_is_paren(line, scan)) {
                 cost_out = first;
                 return true;
             }
@@ -387,7 +398,8 @@ static Candidate parse_perm_line(const std::string& raw, int n) {
         if (!neg) {
             uint64_t first = std::stoull(line.substr(start_digits,
                 scan - start_digits));
-            if (first > static_cast<uint64_t>(n)) {
+            if (first > static_cast<uint64_t>(n) ||
+                    next_nonspace_is_paren(line, scan)) {
                 perm.cost = first;
                 line = trim(line.substr(scan));
                 perm.text = line;
