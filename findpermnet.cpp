@@ -29,10 +29,40 @@ static int max_act_limit = 0;
 // Zero-size tag used with [[no_unique_address]] to eliminate unused fields.
 struct NoExt {};
 
+// 2-bit packed activation-count array for max_act_limit <= 4.
+// 4 entries per byte; 2 bits encode:
+//   0 = "skip": uncovered state, initial state (count 0), or
+//               count==4 saturated state (only for max_act_limit==4).
+//   1 = count 1,  2 = count 2,  3 = count 3.
+// The initial state is stored separately as init_rank and handled before the
+// inner loop so its val=0 entry is never visited during normal iteration.
+// For max_act_limit < 4, saturation is at val == max_act_limit (1/2/3); for
+// max_act_limit == 4, saturation maps back to val=0 (identical to the skip
+// bucket), which the loop skips without a separate saturation check.
+// Only valid for max_act_limit in {1, 2, 3, 4}.
+struct TwoBitCount {
+    std::vector<uint8_t> data_;
+
+    void assign_zero(size_t total) {
+        data_.assign((total + 3u) >> 2, 0u);
+    }
+
+    inline uint8_t get(uint32_t i) const {
+        return (data_[i >> 2] >> ((i & 3u) << 1u)) & 3u;
+    }
+
+    inline void set(uint32_t i, uint8_t val) {
+        uint8_t& b = data_[i >> 2];
+        int sh = static_cast<int>((i & 3u) << 1u);
+        b = uint8_t((b & ~(3u << sh)) | ((val & 3u) << sh));
+    }
+};
+
 // Extra fields present only in max-activation mode (M=true).
 struct MaxActMatExt {
     uint64_t sum_sq = 0;
-    std::vector<uint8_t> best_count;
+    uint32_t init_rank = BAD_RANK;  // rank of the single count-0 initial state
+    TwoBitCount best_count;         // val 0=skip, 1-3=count; see TwoBitCount
 };
 
 static bool set_bit(std::vector<uint64_t>& bs, uint32_t idx) {
@@ -942,28 +972,82 @@ static ScoreResult score_candidate(
     uint32_t new_count = 0;
     uint64_t dtie = 0;
     if constexpr (M) {
-        // Forward only: iterate covered ranks; skip sources at the activation
-        // limit; detect both new coverage and improvements.
+        // covered_ranks: pre-filtered by caller to val ∈ [1, max_act_limit),
+        // i.e. valid non-initial sources.  The initial state (val=0, count=0)
+        // is handled first by a separate single lookup.
+        // uncovered_ranks non-empty → caller chose inverse (uncov < unsat).
         int64_t delta_sq = 0;
-        const size_t n = covered_ranks.size();
-        for (size_t i = 0; i < n; ++i) {
-            if (i + PF_DIST < n)
-                __builtin_prefetch(
-                    &ranker.state_of_rank[covered_ranks[i + PF_DIST]], 0, 0);
-            uint32_t r0 = covered_ranks[i];
-            uint8_t c0 = mat.ext.best_count[r0];
-            if (c0 >= (uint8_t)max_act_limit) continue;
+
+        // --- Initial state (count 0, always a valid source) ---
+        {
+            uint32_t r0 = mat.ext.init_rank;
             State s2 = apply_lut(ranker.unrank(r0), ce.lut, codec);
             uint32_t r2 = ranker.rank(s2);
-            if (r2 == BAD_RANK) continue;
-            uint8_t new_c = c0 + 1;
-            uint8_t old_c = mat.ext.best_count[r2];
-            if (old_c == 0xFF) {
+            if (r2 != BAD_RANK) {
+                // new_c = 1
+                if (!test_bit(mat.covered, r2)) {
+                    ++new_count;
+                    dtie ^= hash64(s2);
+                    delta_sq += 1;  // 1^2
+                } else {
+                    uint8_t val2 = mat.ext.best_count.get(r2);
+                    // old_c: val=0+not-init→sat-at-4; val=0+init→0 (1>0, no impr).
+                    uint8_t old_c = (val2 == 0u && r2 != mat.ext.init_rank)
+                        ? uint8_t(max_act_limit) : val2;
+                    if (1u < old_c)   // new_c=1 improves
+                        delta_sq += 1 - (int64_t)old_c * old_c;
+                }
+            }
+        }
+
+        if (!uncovered_ranks.empty()) {
+            // Inverse mode: iterate uncovered states, check if preimage is a
+            // valid source (covered + not skip + not saturated).  Improvements
+            // to already-covered states are skipped here (secondary, rare at
+            // high coverage).
+            const size_t n = uncovered_ranks.size();
+            for (size_t i = 0; i < n; ++i) {
+                if (i + PF_DIST < n)
+                    __builtin_prefetch(
+                        &ranker.state_of_rank[uncovered_ranks[i + PF_DIST]], 0, 0);
+                uint32_t r2 = uncovered_ranks[i];
+                State s = ranker.unrank(r2);
+                State pre = apply_lut(s, ce.inv_lut, codec);
+                uint32_t r0 = ranker.rank(pre);
+                if (r0 == BAD_RANK || r0 == mat.ext.init_rank) continue;
+                if (!test_bit(mat.covered, r0)) continue;
+                uint8_t c0 = mat.ext.best_count.get(r0);
+                if (c0 == 0u || c0 >= (uint8_t)max_act_limit) continue;
+                uint8_t new_c = c0 + 1;
                 ++new_count;
-                dtie ^= hash64(s2);
+                dtie ^= hash64(s);
                 delta_sq += (int64_t)new_c * new_c;
-            } else if (new_c < old_c) {
-                delta_sq += (int64_t)new_c * new_c - (int64_t)old_c * old_c;
+            }
+        } else {
+            // Forward mode: covered_ranks already filtered to val ∈ [1, k).
+            const size_t n = covered_ranks.size();
+            for (size_t i = 0; i < n; ++i) {
+                if (i + PF_DIST < n)
+                    __builtin_prefetch(
+                        &ranker.state_of_rank[covered_ranks[i + PF_DIST]], 0, 0);
+                uint32_t r0 = covered_ranks[i];
+                uint8_t c0 = mat.ext.best_count.get(r0); // safety guard path
+                if (c0 == 0u || c0 >= (uint8_t)max_act_limit) continue;
+                State s2 = apply_lut(ranker.unrank(r0), ce.lut, codec);
+                uint32_t r2 = ranker.rank(s2);
+                if (r2 == BAD_RANK) continue;
+                uint8_t new_c = c0 + 1;
+                if (!test_bit(mat.covered, r2)) {
+                    ++new_count;
+                    dtie ^= hash64(s2);
+                    delta_sq += (int64_t)new_c * new_c;
+                } else {
+                    uint8_t val2 = mat.ext.best_count.get(r2);
+                    uint8_t old_c = (val2 == 0u && r2 != mat.ext.init_rank)
+                        ? uint8_t(max_act_limit) : val2;
+                    if (new_c < old_c)
+                        delta_sq += (int64_t)new_c * new_c - (int64_t)old_c * old_c;
+                }
             }
         }
         return {mat.cover_count + new_count,
@@ -1019,8 +1103,10 @@ static MaterializedState<M> make_start_materialized(State init_state,
     m.tie = hash64(init_state);
     if constexpr (M) {
         m.ext.sum_sq = 0;
-        m.ext.best_count.assign(ranker.total, 0xFF);
-        m.ext.best_count[r] = 0; // initial state costs 0 activations
+        m.ext.init_rank = r;
+        m.ext.best_count.assign_zero(ranker.total);
+        // Initial state has count 0; val=0 is the default (assign_zero).
+        // It is handled separately before inner loops via init_rank.
     }
     return m;
 }
@@ -1040,18 +1126,25 @@ static void apply_candidate_in_place(MaterializedState<M>& out,
     const CachedLUTEntry& ce = lut_cache.get(cand_idx);
     if constexpr (M) {
         // max_act mode: forward only, update best_count and sum_sq exactly.
-        // Snapshot source counts BEFORE any updates so that if the candidate
-        // maps r0→r2 and r2→r3, we don't count it as used twice in one step.
+        // Snapshot source (r0, c0) pairs BEFORE any updates so that a chain
+        // r0→r2→r3 within one candidate step isn't counted twice.
+        // parent_ranks was pre-filtered to val ∈ [1, max_act_limit); the initial
+        // state (val=0) is NOT in parent_ranks and is always appended first.
         struct Src { uint32_t r0; uint8_t c0; };
         std::vector<Src> srcs;
-        const size_t n = parent_ranks.size();
-        srcs.reserve(n);
-        for (size_t i = 0; i < n; ++i) {
+        srcs.reserve(parent_ranks.size() + 1);
+
+        // Initial state: count 0 is always a valid source.
+        srcs.push_back({out.ext.init_rank, 0u});
+
+        for (size_t i = 0; i < parent_ranks.size(); ++i) {
             uint32_t r0 = parent_ranks[i];
-            uint8_t c0 = out.ext.best_count[r0];
-            if (c0 < (uint8_t)max_act_limit)
-                srcs.push_back({r0, c0});
+            uint8_t c0 = out.ext.best_count.get(r0);
+            if (c0 == 0u) continue;                      // init or sat-at-4
+            if (c0 >= (uint8_t)max_act_limit) continue;  // sat for k<4
+            srcs.push_back({r0, c0});
         }
+
         const size_t m = srcs.size();
         for (size_t i = 0; i < m; ++i) {
             if (i + PF_DIST < m)
@@ -1065,17 +1158,26 @@ static void apply_candidate_in_place(MaterializedState<M>& out,
                 throw std::runtime_error(
                     "internal rank error after applying permutation");
             uint8_t new_c = c0 + 1;
-            uint8_t old_c = out.ext.best_count[r2];
-            if (old_c == 0xFF) {
+            // new_c ≤ 4 (c0 ≤ 3); store as val=new_c, or 0 when new_c==4 (sat).
+            uint8_t store_val = (new_c <= 3u) ? new_c : 0u;
+            if (!test_bit(out.covered, r2)) {
                 set_bit(out.covered, r2);
                 ++out.cover_count;
                 out.tie ^= hash64(s2);
-                out.ext.best_count[r2] = new_c;
+                out.ext.best_count.set(r2, store_val);
                 out.ext.sum_sq += (uint64_t)new_c * new_c;
-            } else if (new_c < old_c) {
-                out.ext.sum_sq = out.ext.sum_sq
-                    - (uint64_t)old_c * old_c + (uint64_t)new_c * new_c;
-                out.ext.best_count[r2] = new_c;
+            } else {
+                // Possible improvement: determine old_c from 2-bit val.
+                // val=0 + covered: init state (count=0, can't improve from c0+1≥1)
+                //                  OR saturated at k=4 (count=4, formula gives 4).
+                uint8_t val2 = out.ext.best_count.get(r2);
+                uint8_t old_c = (val2 == 0u && r2 != out.ext.init_rank)
+                    ? uint8_t(max_act_limit) : val2;
+                if (new_c < old_c) {
+                    out.ext.sum_sq = out.ext.sum_sq
+                        - (uint64_t)old_c * old_c + (uint64_t)new_c * new_c;
+                    out.ext.best_count.set(r2, store_val);
+                }
             }
         }
         return;
@@ -1663,6 +1765,13 @@ struct RunParams {
 
 template<bool M>
 static int run_beam(RunParams& p) {
+    if constexpr (M) {
+        if (max_act_limit > 4)
+            throw std::runtime_error(
+                "-k value > 4 is not supported; the 2-bit count encoding "
+                "only handles max_act_limit in {1, 2, 3, 4}");
+    }
+
     auto wall_now = []() {
         return std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1837,10 +1946,32 @@ static int run_beam(RunParams& p) {
                         const BeamState<M>& st = beam[bi];
                         const MaterializedState<M>& mat = beam_mats[bi];
                         std::vector<uint32_t> covered_ranks, uncovered_ranks;
-                        if constexpr (M)
-                            covered_ranks = extract_covered_ranks(
-                                mat.covered, p.ranker.total);
-                        else if (mat.cover_count * 2 > p.ranker.total)
+                        if constexpr (M) {
+                            // Collect non-skip valid sources: val ∈ [1, k).
+                            // The initial state (val=0) is handled separately
+                            // inside score_candidate via init_rank.
+                            covered_ranks.reserve(mat.cover_count);
+                            const uint8_t klim = (uint8_t)max_act_limit;
+                            uint32_t nw = (p.ranker.total + 63u) >> 6;
+                            for (uint32_t w = 0; w < nw; ++w) {
+                                uint64_t bits = mat.covered[w];
+                                while (bits) {
+                                    uint32_t b = static_cast<uint32_t>(
+                                        __builtin_ctzll(bits));
+                                    uint32_t r = w * 64u + b;
+                                    uint8_t v = mat.ext.best_count.get(r);
+                                    if (v != 0u && v < klim)
+                                        covered_ranks.push_back(r);
+                                    bits &= bits - 1;
+                                }
+                            }
+                            // Use inverse when uncovered set is smaller.
+                            uint32_t uncov =
+                                p.ranker.total - mat.cover_count;
+                            if (uncov < (uint32_t)covered_ranks.size())
+                                uncovered_ranks = extract_uncovered_ranks(
+                                    mat.covered, p.ranker.total);
+                        } else if (mat.cover_count * 2 > p.ranker.total)
                             uncovered_ranks = extract_uncovered_ranks(
                                 mat.covered, p.ranker.total);
                         else
@@ -1904,6 +2035,7 @@ static int run_beam(RunParams& p) {
         if (next.empty())
             throw std::runtime_error("beam died unexpectedly");
         sort_and_trim<M>(next, global_limit);
+        const double phase1_end = wall_now();
 
         // Phase 2: build next_mats in parallel from parent beam_mats.
         // Each surviving child copies its parent's bitarray (~338 KB) and
@@ -1923,10 +2055,28 @@ static int run_beam(RunParams& p) {
                         const BeamState<M>& child = next[i];
                         next_mats[i] = beam_mats[child.parent_idx];
                         std::vector<uint32_t> parent_ranks, parent_uncovered;
-                        if constexpr (M)
-                            parent_ranks = extract_covered_ranks(
-                                next_mats[i].covered, p.ranker.total);
-                        else if (next_mats[i].cover_count * 2 > p.ranker.total)
+                        if constexpr (M) {
+                            // Collect non-skip valid sources: val ∈ [1, k).
+                            // The initial state is handled inside apply_candidate
+                            // via init_rank and must NOT be in parent_ranks.
+                            const auto& cov_bs = next_mats[i].covered;
+                            const auto& bc = next_mats[i].ext.best_count;
+                            parent_ranks.reserve(next_mats[i].cover_count);
+                            const uint8_t klim = (uint8_t)max_act_limit;
+                            uint32_t nw = (p.ranker.total + 63u) >> 6;
+                            for (uint32_t w = 0; w < nw; ++w) {
+                                uint64_t bits = cov_bs[w];
+                                while (bits) {
+                                    uint32_t b = static_cast<uint32_t>(
+                                        __builtin_ctzll(bits));
+                                    uint32_t r = w * 64u + b;
+                                    uint8_t v = bc.get(r);
+                                    if (v != 0u && v < klim)
+                                        parent_ranks.push_back(r);
+                                    bits &= bits - 1;
+                                }
+                            }
+                        } else if (next_mats[i].cover_count * 2 > p.ranker.total)
                             parent_uncovered = extract_uncovered_ranks(
                                 next_mats[i].covered, p.ranker.total);
                         else
@@ -1945,12 +2095,15 @@ static int run_beam(RunParams& p) {
         beam_mats = std::move(next_mats);
 
         const BeamState<M>& best = beam.front();
+        const double step_end = wall_now();
         std::cerr << "depth " << (depth + 1) << ": best "
             << best.cover_count << "/" << p.ranker.total;
         if constexpr (M) std::cerr << " sum_sq=" << best.sum_sq;
         std::cerr << " cost=" << best.cost
                   << " beam=" << beam.size()
-                  << " t=" << (wall_now() - step_start) << "s\n";
+                  << " p1=" << (phase1_end - step_start) << "s"
+                  << " p2=" << (step_end - phase1_end) << "s"
+                  << " t=" << (step_end - step_start) << "s\n";
 
         if (best.cover_count == p.ranker.total) {
             append_solution<M>(best, -1, p.perms, p.codec, p.init_state, p.key);
