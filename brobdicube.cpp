@@ -1534,7 +1534,7 @@ wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {
    int o = cost / 10000 % 10000 ;
    int c = cost % 10000 ;
    for (int w=1; ; w++) {
-      double t = (v * Mx  + h * w * (1LL << w) * 0.5 + o * (1LL << w)) ;
+      double t = (v * Mx + h * w * (1LL << w) * 0.5 + o * ((1LL << w) - 1)) ;
       byw.push_back(t) ;
       if ((Mx >> (w + 1)) == 0)
          break ;
