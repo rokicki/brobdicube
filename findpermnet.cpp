@@ -1958,16 +1958,7 @@ static int run_beam(RunParams& p) {
         }
     }
 
-    const BeamState<M>& best = beam.front();
     std::cout << "NOT FOUND\n";
-    std::cout << "best " << best.cover_count << "/" << p.ranker.total
-        << " depth " << best.seq.size()
-              << " cost " << best.cost << "\n";
-    for (size_t j = 0; j < best.seq.size(); ++j) {
-        int ci = best.seq[j];
-        std::cout << j << ": candidate " << ci << " cost "
-            << p.perms[ci].cost << " " << perm_to_cycles(p.perms[ci]) << "\n";
-    }
     return 1;
 }
 
