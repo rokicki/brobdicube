@@ -34,72 +34,9 @@ static cubesizetype atocsz(const char *s) {
    while (*s >= '0' && *s <= '9') r = r * 10 + (*s++ - '0') ;
    return neg ? -r : r ;
 }
-struct planmask {
-   uint64_t w = 0 ;
-   static planmask none() { return {~0ULL} ; }
-   // Bitmask mode (MSB=0): bits 0..62 index algorithms 0..62.
-   // Compact mode (MSB=1): 7 sorted 9-bit fields, 511 = empty slot,
-   //   supports algorithm indices 0..510; used when STAGE > 63.
-   // ~0ULL is the "not reached" sentinel (compact, all fields=511).
-   static int max_stages() { return 511 ; }
-   bool is_none()    const { return w == ~0ULL ; }
-   bool is_bitmask() const { return (w >> 63) == 0 ; }
-   // Insert index i (sorted) into compact fields of *this (MSB already set).
-   // Returns none() if all 7 slots are already occupied.
-   planmask compact_insert(int i) const {
-      int fields[8], count = 0 ;
-      for (int k = 0; k < 7; k++) {
-         int f = (w >> (k * 9)) & 511 ;
-         if (f == 511) break ;
-         fields[count++] = f ;
-      }
-      if (count == 7) return none() ;
-      int pos = count ;
-      for (int k = 0; k < count; k++)
-         if (i < fields[k]) { pos = k ; break ; }
-      for (int k = count; k > pos; k--)
-         fields[k] = fields[k-1] ;
-      fields[pos] = i ;
-      count++ ;
-      uint64_t r = 1ULL << 63 ;
-      for (int k = 0; k < 7; k++)
-         r |= (uint64_t)(k < count ? fields[k] : 511) << (k * 9) ;
-      return {r} ;
-   }
-   planmask set(int i) const {
-      if (is_bitmask()) {
-         if (i < 63) return {w | (1ULL << i)} ;
-         // Convert bitmask -> compact then insert algorithm i >= 63.
-         if (__builtin_popcountll(w) >= 7) return none() ; // would overflow
-         planmask c = none() ; // none() = compact with all fields=511 = empty
-         for (int k = 0; k < 63; k++)
-            if ((w >> k) & 1)
-               c = c.compact_insert(k) ;
-         return c.compact_insert(i) ;
-      } else {
-         return compact_insert(i) ;
-      }
-   }
-   bool test(int i) const {
-      if (is_bitmask()) return i < 63 && ((w >> i) & 1) ;
-      for (int k = 0; k < 7; k++) {
-         int f = (w >> (k * 9)) & 511 ;
-         if (f > i || f == 511) return false ;
-         if (f == i) return true ;
-      }
-      return false ;
-   }
-   int popcount() const {
-      if (is_bitmask()) return __builtin_popcountll(w) ;
-      int count = 0 ;
-      for (int k = 0; k < 7; k++)
-         if (((w >> (k * 9)) & 511) != 511) count++ ;
-      return count ;
-   }
-   bool operator==(planmask b) const { return w == b.w ; }
-   bool operator!=(planmask b) const { return w != b.w ; }
-} ;
-using uchar = unsigned char ;
+#include "planmask.h"
+#include "xorbit.h"
+#include "mv.h"
 int showdetails = 0 ;
 int alwaysinmem = 0 ;
 ll writemoveinc ;
@@ -126,12 +63,7 @@ int wing_cycle_index[24][24][24] ;   // -1 if the triple is not a valid 3-cycle,
 int wing_cycle_triple[4048][3] ;     // inverse of wing_cycle_index 
 const int oppface[] = { 5, 3, 4, 1, 2, 0 } ;
 const char *faceorder = "ULFRBD" ;
-random_device rd;
-mt19937_64 rng(rd()) ;
-void error(const char *s) {
-   cerr << s << endl ;
-   exit(10) ;
-}
+#include "util.h"
 static double start ;
 static mutex io_mutex ;
 static int nprob_threads = (int)thread::hardware_concurrency() ;
@@ -199,283 +131,10 @@ void coordtospeffz(int Mx, int My, int x, int y, int &ox, int &oy, int &oz) {
    assert(ox >= 1) ;
    assert(oy >= 1) ;
 }
-struct xorbit {
-   uchar a[24] ;
-   void rot4(int b, int c, int d, int e) {
-      uchar t = a[b] ;
-      a[b] = a[e] ;
-      a[e] = a[d] ;
-      a[d] = a[c] ;
-      a[c] = t ;
-   }
-   void rot2(int b, int c, int d, int e) {
-      swap(a[b], a[d]) ;
-      swap(a[c], a[e]) ;
-   }
-   void rot4i(int b, int c, int d, int e) {
-      rot4(e, d, c, b) ;
-   }
-} ;
-void oclear(xorbit& x) {
-   for (int i=0; i<24; i++)
-      x.a[i] = i >> 2 ;
-}
-void uclear(xorbit& x) {
-   for (int i=0; i<24; i++)
-      x.a[i] = i ;
-}
-void scramble(xorbit& x) {
-   oclear(x) ;
-   shuffle(x.a, x.a+24, rng) ;
-}
-struct mv {
-   int dep ;
-   short face, twist ;
-} ;
 vector<mv> moveset ;
 struct xcube ;
 void domove(mv mv, xcube &cube, bool suppress_cancellations=false) ;
-/*
- *   This does 333 work, and 222 work with vestigial edges.
- */
-struct threecube {
-   static constexpr int cor[8][3] = {
-      {0, 4, 17}, {1, 16,  13},  {2, 12, 9}, {3, 8, 5},
-      {20, 6, 11}, {23, 18, 7}, {21, 10, 15}, {22, 14, 19}
-   } ;
-   static constexpr int edg[12][2] = {
-      {0, 16}, {1, 12}, {2, 8}, {3, 4}, {11, 5}, {9, 15}, {19, 13},
-      {17, 7}, {20, 10}, {21, 14}, {22, 18}, {23, 6}
-   } ;
-   threecube(int src_, int odd) {
-      for (int i=0; i<6; i++)
-         centercenters[i] = i ;
-      if (src_ == 'I' || src_ == 'C') { // inputmoves, or clear
-         oclear(corner) ;
-         oclear(edge) ;
-         if (!odd)
-            for (int i=0; i<24; i++)
-               edge.a[i] = 0 ;
-      } else if (src_ == 'U') { // orbits have numbers 0..23
-         uclear(corner) ;
-         uclear(edge) ;
-      } else if (src_ == 'R') { // random
-         oclear(corner) ;
-         if (odd)
-            oclear(edge) ;
-         else
-            for (int i=0; i<24; i++)
-               edge.a[i] = 0 ;
-         int parity = 0 ;
-         for (int i=0; i<8; i++) {
-            uniform_int_distribution<int> distrib(i, 7) ;
-            int j = distrib(rng) ;
-            if (j != i) {
-               parity++ ;
-               swap(corner.a[cor[i][0]], corner.a[cor[j][0]]) ;
-               swap(corner.a[cor[i][1]], corner.a[cor[j][1]]) ;
-               swap(corner.a[cor[i][2]], corner.a[cor[j][2]]) ;
-            }
-         }
-         if (odd) {
-            for (int i=0; i<11; i++) {
-               uniform_int_distribution<int> distrib(i, 11) ;
-               int j = distrib(rng) ;
-               if (j != i) {
-                  parity++ ;
-                  swap(edge.a[edg[i][0]], edge.a[edg[j][0]]) ;
-                  swap(edge.a[edg[i][1]], edge.a[edg[j][1]]) ;
-               }
-            }
-            if (parity & 1) {
-               swap(edge.a[edg[10][0]], edge.a[edg[11][0]]) ;
-               swap(edge.a[edg[10][1]], edge.a[edg[11][1]]) ;
-            }
-         }
-         int twist = 0 ;
-         uniform_int_distribution<int> tw(0, 2) ;
-         for (int i=0; i<8; i++) {
-            int j ;
-            if (i<7) {
-               j = tw(rng) ;
-               twist += j ;
-            } else
-               j = (3 * 8 - twist) % 3 ;
-            switch (j) {
-case 0:        break ;
-case 1:        swap(corner.a[cor[i][0]], corner.a[cor[i][1]]) ;
-               swap(corner.a[cor[i][1]], corner.a[cor[i][2]]) ;
-               break ;
-case 2:        swap(corner.a[cor[i][1]], corner.a[cor[i][2]]) ;
-               swap(corner.a[cor[i][0]], corner.a[cor[i][1]]) ;
-               break ;
-            }
-         }
-         if (odd) {
-            twist = 0 ;
-            uniform_int_distribution<int> tw2(0, 1) ;
-            for (int i=0; i<12; i++) {
-               int j ;
-               if (i<11) {
-                  j = tw2(rng) ;
-                  twist += j ;
-               } else
-                  j = (twist & 1) ;
-               if (j)
-                  swap(edge.a[edg[i][0]], edge.a[edg[i][1]]) ;
-            }
-         }
-      } else if (src_ == '1') { // phase 1
-         for (int i=0; i<24; i++) {
-            corner.a[i] = 0 ;
-            edge.a[i] = 0 ;
-         }
-         for (int i=0; i<4; i++) {
-            corner.a[i] = 1 ;
-            edge.a[i] = 1 ;
-            corner.a[20+i] = 1 ;
-            edge.a[20+i] = 1 ;
-         }
-         edge.a[11] = edge.a[9] = edge.a[19] = edge.a[17] = 2 ;
-      }
-   }
-   void rot4c(int a, int b, int c, int d) {
-      auto t = centercenters[a] ;
-      centercenters[a] = centercenters[b] ;
-      centercenters[b] = centercenters[c] ;
-      centercenters[c] = centercenters[d] ;
-      centercenters[d] = t ;
-   }
-   int countbadcenters() {
-      int centerwrongcount = 0 ;
-      for (int i=0; i<6; i++)
-         if (centercenters[i] != i)
-            centerwrongcount++ ;
-      return centerwrongcount ;
-   }
-   void domove(mv mv) {
-      assert(mv.dep == 1 || mv.dep == 2) ;
-      assert(mv.twist > 0) ;
-      assert(mv.twist < 4) ;
-      for (int i=0; i<mv.twist; i++) {
-         switch (mv.face + 6 * mv.dep - 6) {
-case 0: // U
-            corner.rot4(0, 1, 2, 3) ;
-            corner.rot4(16, 12, 8, 4) ;
-            corner.rot4(17, 13, 9, 5) ;
-            edge.rot4(0, 1, 2, 3) ;
-            edge.rot4(16, 12, 8, 4) ;
-            break ;
-case 1: // L
-            corner.rot4(4, 5, 6, 7) ;
-            corner.rot4(0, 8, 20, 18) ;
-            corner.rot4(3, 11, 23, 17) ;
-            edge.rot4(4, 5, 6, 7) ;
-            edge.rot4(3, 11, 23, 17) ;
-            break ;
-case 2: // F
-            corner.rot4(8, 9, 10, 11) ;
-            corner.rot4(3, 12, 21,  6) ;
-            corner.rot4(2, 15, 20, 5) ;
-            edge.rot4(8, 9, 10, 11) ;
-            edge.rot4(2, 15, 20, 5) ;
-            break ;
-case 3: // R
-            corner.rot4(12, 13, 14, 15) ;
-            corner.rot4(22, 10, 2, 16) ;
-            corner.rot4(21, 9, 1, 19) ;
-            edge.rot4(12, 13, 14, 15) ;
-            edge.rot4(1, 19, 21, 9) ;
-            break ;
-case 4: // B
-            corner.rot4(16, 17, 18, 19) ;
-            corner.rot4(1, 4, 23, 14) ;
-            corner.rot4(0, 7, 22, 13) ;
-            edge.rot4(16, 17, 18, 19) ;
-            edge.rot4(0, 7, 22, 13) ;
-            break ;
-case 5: // D
-            corner.rot4(20, 21, 22, 23) ;
-            corner.rot4(7, 11, 15, 19) ;
-            corner.rot4(6, 10, 14, 18) ;
-            edge.rot4(20, 21, 22, 23) ;
-            edge.rot4(10, 14, 18, 6) ;
-            break ;
-case 6: // 2U
-            edge.rot4(19, 15, 11, 7) ;
-            edge.rot4(17, 13, 9, 5) ;
-            rot4c(4, 3, 2, 1) ;
-            break ;
-case 7: // 2L
-            edge.rot4(0, 8, 20, 18) ;
-            edge.rot4(2, 10, 22, 16) ;
-            rot4c(0, 2, 5, 4) ;
-            break ;
-case 8: // 2F
-            edge.rot4(1, 14, 23, 4) ;
-            edge.rot4(3, 12, 21, 6) ;
-            rot4c(0, 3, 5, 1) ;
-            break ;
-case 9: // 2R
-            edge.rot4(18, 20, 8, 0) ;
-            edge.rot4(16, 22, 10, 2) ;
-            rot4c(4, 5, 2, 0) ;
-            break ;
-case 10: // 2B
-            edge.rot4(4, 23, 14, 1) ;
-            edge.rot4(6, 21, 12, 3) ;
-            rot4c(1, 5, 3, 0) ;
-            break ;
-case 11: // 2D
-            edge.rot4(7, 11, 15, 19) ;
-            edge.rot4(5, 9, 13, 17) ;
-            rot4c(1, 2, 3, 4) ;
-            break ;
-         }
-      }
-   }
-   threecube tophase1() const {
-      threecube r('C', 1) ;
-      for (int i=0; i<24; i++) {
-         r.edge.a[i] = 0 ;
-         r.corner.a[i] = 0 ;
-      }
-      for (int i=0; i<12; i++) {
-         int a = edg[i][0] ;
-         int b = edg[i][1] ;
-         if (edge.a[a] == 0 || edge.a[a] == 5) {
-            r.edge.a[a] = 1 ;
-         } else if (edge.a[b] == 0 || edge.a[b] == 5) {
-            r.edge.a[b] = 1 ;
-         } else if (edge.a[a] == 2 || edge.a[a] == 4) {
-            r.edge.a[a] = 2 ;
-         } else if (edge.a[b] == 2 || edge.a[b] == 4) {
-            r.edge.a[b] = 2 ;
-         } else {
-            error("! Unable to convert cube edges to phase1") ;
-         }
-      }
-      for (int i=0; i<24; i++)
-         if (corner.a[i] == 0 || corner.a[i] == 5)
-            r.corner.a[i] = 1 ;
-      return r ;
-   }
-   // we don't currently hash centercenters because we solve those
-   // first and then don't use slice moves for corner/middle edge
-   // solves.
-   size_t hash() const {
-      string_view sv((const char *)this, sizeof(*this)) ;
-      return std::hash<string_view>{}(sv) ;
-   }
-   bool operator==(const threecube &b) const {
-      for (int i=0; i<24; i++)
-         if (corner.a[i] != b.corner.a[i] || edge.a[i] != b.edge.a[i])
-            return 0 ;
-      return 1 ;
-   }
-   xorbit corner, edge ;
-   uchar centercenters[6] ;
-} ;
+#include "threecube.h"
 template<int> int goodmove(int, int) { return 1 ; }
 template<> int goodmove<1>(int f, int tw) {
    return f==0 || f==5 || tw == 2 ;
@@ -1284,12 +943,6 @@ default:    error("! unexpected depth in algorithm") ;
       }
    }
 } ;
-void permimul(xorbit &a, xorbit &b) {
-   xorbit tmp ;
-   for (int i=0; i<24; i++)
-      tmp.a[i] = a.a[b.a[i]] ;
-   a = tmp ;
-}
 vector<blockalgo> loadalgs(const vector<string> &algs, int m=0) {
    expandrotations() ;
    xcube cube(4, 5, 'U') ; // get the special version with 0..23
@@ -1851,6 +1504,7 @@ struct netgen {
       const bool pow2base = !(base & (base - 1)) ;
       const int hmshift = pow2base ? __builtin_ctz(halfmod) : 0 ;
       const int hmmask  = halfmod - 1 ;
+      bool plan_warned = false ;
       for (int i=0; i<STAGE && covered < goal; i++) {
          ll tab[6][256] ;
          int ng = build_fast_tab(algs[i].perm, tab) ;
@@ -1858,10 +1512,17 @@ struct netgen {
          fill(nextcost.begin(), nextcost.end(), LLONG_MAX) ;
          auto update = [&](int j, int d) {
             planmask newplan = plans[j].set(i) ;
-            if (!newplan.is_none()) {
-               ll nc = curcost[j] + algs[i].cost ;
-               if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
+            ll nc = curcost[j] + algs[i].cost ;
+            if (newplan.is_none()) {
+               if (!plan_warned && plans[d].is_none()) {
+                  lock_guard<mutex> lk(io_mutex) ;
+                  cerr << "Warning: planmask overflow in " << key
+                       << " alg " << i << "; greedy plan may be incomplete\n" ;
+                  plan_warned = true ;
+               }
+               return ;
             }
+            if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
          } ;
          if (base == 4) {
             for (int j=0; j<goal; j++)
@@ -1918,6 +1579,7 @@ struct netgen {
       const bool pow2base = !(base & (base - 1)) ;
       const int hmshift = pow2base ? __builtin_ctz(halfmod) : 0 ;
       const int hmmask  = halfmod - 1 ;
+      bool plan_warned = false ;
       for (int i=0; i<STAGE; i++) {
          ll tab[6][256] ;
          int ng = build_fast_tab(algs[i].perm, tab) ;
@@ -1925,10 +1587,17 @@ struct netgen {
          fill(nextcost.begin(), nextcost.end(), LLONG_MAX) ;
          auto update = [&](int j, int d) {
             planmask newplan = plans[j].set(i) ;
-            if (!newplan.is_none()) {
-               ll nc = curcost[j] + algs[i].cost ;
-               if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
+            ll nc = curcost[j] + algs[i].cost ;
+            if (newplan.is_none()) {
+               if (!plan_warned && nc < curcost[d]) {
+                  lock_guard<mutex> lk(io_mutex) ;
+                  cerr << "Warning: planmask overflow in " << key
+                       << " alg " << i << "; optimal plan may be suboptimal\n" ;
+                  plan_warned = true ;
+               }
+               return ;
             }
+            if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
          } ;
          if (base == 4) {
             for (int j=0; j<goal; j++)
@@ -1988,18 +1657,13 @@ struct netgen {
    }
    void doplan(planmask plan, xorbit &orb) {
       if (plan.is_bitmask()) {
-         for (int pi=STAGE-1; pi>=0; pi--) {
-            if (!plan.test(pi))
-               continue ;
-            permimul(orb, algs[pi].perm) ;
-         }
+         for (int pi=STAGE-1; pi>=0; pi--)
+            if (plan.test(pi))
+               permimul(orb, algs[pi].perm) ;
       } else {
-         // Compact mode: fields are sorted ascending; apply highest index first.
-         for (int k=6; k>=0; k--) {
-            int pi = (plan.w >> (k * 9)) & 511 ;
-            if (pi == 511) continue ;
-            permimul(orb, algs[pi].perm) ;
-         }
+         int fields[7], n = plan.decode(fields) ;
+         for (int k = n-1; k >= 0; k--)
+            permimul(orb, algs[fields[k]].perm) ;
       }
    }
    FILE *openprobcache(const char *how) {

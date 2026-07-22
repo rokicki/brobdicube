@@ -11,10 +11,10 @@ endif
 
 .PHONY: all clean
 
-all: brobdicube pareto findpermnet algutil
+all: brobdicube pareto findpermnet algutil test_planmask
 
-brobdicube: brobdicube.cpp fpng.cpp
-	$(CXX) $(CXXFLAGS) -o $@ brobdicube.cpp -w fpng.cpp $(LDFLAGS)
+brobdicube: brobdicube.cpp util.cpp fpng.cpp
+	$(CXX) $(CXXFLAGS) -o $@ brobdicube.cpp util.cpp -w fpng.cpp $(LDFLAGS)
 
 pareto: pareto.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
@@ -25,8 +25,11 @@ findpermnet: findpermnet.cpp
 algutil: algutil.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
+test_planmask: test_planmask.cpp planmask.h
+	$(CXX) $(CXXFLAGS) -o $@ test_planmask.cpp $(LDFLAGS)
+
 clean:
-	rm -f brobdicube pareto findpermnet algutil
+	rm -f brobdicube pareto findpermnet algutil test_planmask
 	rm -rf test
 ifeq ($(UNAME), Darwin)
 	rm -rf brobdicube.dSYM pareto.dSYM findpermnet.dSYM algutil.dSYM
