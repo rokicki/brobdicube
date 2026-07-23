@@ -357,18 +357,33 @@ Use the Makefile:
 make
 ```
 
+All source files live in the `src/` subdirectory; the Makefile passes `-Isrc`
+so headers are found automatically.
+
 ### Basic Usage
 
 ```
 # Solve a random 100×100×100 cube (all hardware threads):
 ./brobdicube -D algs3 100
 
-# Estimate move counts across a range of sizes:
+# Estimate move counts across a range of sizes (runs in parallel):
 ./brobdicube -P 4 100000000000000000 -D algs3
 
 # Solve a specific scramble:
 echo "2U 3R 2F 2L 3B 2D ..." | ./brobdicube -D algs3 -i 100
+
+# Print stats for every loaded algorithm set:
+./brobdicube --describealgorithms -D algs3
 ```
+
+### -P parallel planning sweep
+
+`-P start end` computes the estimated move count for each cube size
+`start, 2·start, 4·start, …` up to `end`.  Each size is independent, so
+the work is distributed across all available threads (or the count set by
+`-t`).  Results are printed in order of increasing N as soon as the
+smallest pending size completes, so output appears incrementally rather than
+all at once.
 
 ---
 
@@ -471,16 +486,45 @@ subdirectory.
 
 ## Repository Layout
 
+All C++ source files are under `src/`.  Binaries are written to the root
+directory by the Makefile.
+
+### Source files (`src/`)
+
+**brobdicube** is split across multiple compilation units:
+
+| File | Purpose |
+|------|---------|
+| `brobdicube.cpp` | Entry point, solver driver, strip parallelism, `-P` sweep |
+| `xcube.cpp` / `xcube.h` | NxN cube representation, move application, orbit I/O |
+| `threecube.h` | 3×3 corner/edge sub-cube embedded in the NxN cube |
+| `cornersolver.cpp` / `cornersolver.h` | Optimal corner solver (pruning table DFS) |
+| `wingsolver.cpp` / `wingsolver.h` | Wing/edge 3-cycle solver |
+| `netgen.cpp` / `netgen.h` | Planning system: `netgen` (greedy/optimal BFS planner), `bestcost`, `explain`, prob-cache I/O |
+| `util.cpp` / `util.h` | Move parsing, I/O helpers |
+| `fpng.cpp` / `fpng.h` | Third-party PNG encoder (frame writing, `WRITEFRAMES` only) |
+| `planmask.h` | `planmask` type: compact bitmask/compact-mode plan representation |
+| `xorbit.h` | `xorbit` type: 24-byte orbit permutation array |
+| `mv.h` | `mv` type: single move (face, depth, twist) |
+
+**Other tools** (each a single `.cpp`):
+
+| File | Purpose |
+|------|---------|
+| `findpermnet.cpp` | Beam search for master sequences (costalgs input) |
+| `algutil.cpp` | Algorithm expansion, filtering, and cost annotation |
+| `pareto.cpp` | Pareto front extraction and `.alg` file writer |
+| `test_planmask.cpp` | Unit test for `planmask` |
+
+### Top-level files
+
 | File / Directory | Purpose |
 |-----------------|---------|
-| `brobdicube.cpp` | brobdicube solver |
-| `findpermnet.cpp` | beam search for master sequences (costalgs input) |
-| `algutil.cpp` | algorithm expansion, filtering, and cost annotation |
-| `pareto.cpp` | Pareto front extraction and `.alg` file writer |
-| `runallreductions.py` | production offline pipeline (all keys, all steps) |
-| `rename_algs.py` | one-time utility to rename `.alg` files to v/h/o/c format |
-| `test_pipeline.py` | quick end-to-end pipeline test |
-| `algs3/` | algorithm files (`.alg`) and probability caches (`.prob3-greedy`, `.prob3-optimal`) |
-| `progress.md` | detailed implementation notes and development log |
+| `Makefile` | Builds all five targets (`brobdicube`, `findpermnet`, `pareto`, `algutil`, `test_planmask`) |
+| `runallreductions.py` | Production offline pipeline (all keys, all steps) |
+| `rename_algs.py` | One-time utility to rename `.alg` files to v/h/o/c format |
+| `test_pipeline.py` | Quick end-to-end pipeline test |
+| `algs3/` | Algorithm files (`.alg`) and probability caches (`.prob3-greedy`, `.prob3-optimal`) |
+| `progress.md` | Detailed implementation notes and development log |
 
 ---
