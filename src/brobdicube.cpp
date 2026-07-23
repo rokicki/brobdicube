@@ -894,13 +894,13 @@ void preload_probs() {
       FILE* f = ng->openprobcache("r") ;
       if (f) fclose(f) ; else need_compute++ ;
    }
-   if (need_compute == 0) return ;  // all caches present — silent fast path
    int nthreads = nprob_threads > 0 ? nprob_threads :
                   (int)thread::hardware_concurrency() ;
    if (nthreads < 1) nthreads = 1 ;
    if (nthreads > total) nthreads = total ;
-   cout << "Pre-computing probabilities for " << need_compute
-        << " algorithm sets using " << nthreads << " threads" << endl ;
+   if (need_compute > 0)
+      cout << "Pre-computing probabilities for " << need_compute
+           << " algorithm sets using " << nthreads << " threads" << endl ;
    atomic<int> next_idx{0} ;
    atomic<int> computed{0} ;
    auto worker = [&]() {
@@ -926,7 +926,8 @@ void preload_probs() {
       if (ng->bad) bad_count++ ;
    if (bad_count > 0)
       cerr << "WARNING: " << bad_count << " inconsistent algorithm file(s) skipped." << endl ;
-   cout << "All probability caches ready in " << duration() << endl ;
+   if (need_compute > 0)
+      cout << "All probability caches ready in " << duration() << endl ;
 }
 int main(int argc, char *argv[]) {
    duration() ;
