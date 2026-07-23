@@ -13,8 +13,8 @@ endif
 
 all: brobdicube pareto findpermnet algutil test_planmask
 
-brobdicube: brobdicube.cpp util.cpp fpng.cpp
-	$(CXX) $(CXXFLAGS) -o $@ brobdicube.cpp util.cpp -w fpng.cpp $(LDFLAGS)
+brobdicube: brobdicube.cpp xcube.cpp cornersolver.cpp wingsolver.cpp netgen.cpp util.cpp fpng.cpp
+	$(CXX) $(CXXFLAGS) -o $@ brobdicube.cpp xcube.cpp cornersolver.cpp wingsolver.cpp netgen.cpp util.cpp -w fpng.cpp $(LDFLAGS)
 
 pareto: pareto.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
