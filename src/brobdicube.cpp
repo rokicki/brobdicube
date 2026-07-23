@@ -11,6 +11,7 @@
 #include <random>
 #include <map>
 #include <queue>
+#include <sstream>
 #include <vector>
 #include <dirent.h>
 #include <sys/time.h>
@@ -844,12 +845,8 @@ void describe_algorithms() {
          int idx = next_idx.fetch_add(1, memory_order_relaxed) ;
          if (idx >= total) break ;
          auto& [canonical_key, ng] = all_ng[idx] ;
-         // If max_activations_seen unknown (cache was loaded, not computed),
-         // force a replan now to obtain it, then free the plan structures.
-         if (ng->max_activations_seen < 0) {
-            ng->plan() ;
-            ng->plans.clear() ; ng->plans.shrink_to_fit() ;
-         }
+         if (ng->max_activations_seen < 0)
+            ng->ensureprobs() ;
          double avg_act = 0 ;
          ll total_cost = 0, max_cost = 0 ;
          int depth = 0 ;
@@ -1044,19 +1041,53 @@ default:
    }
    if (plan_range_start > 0) {
       const char *costname = useavg ? "average" : "worst-case" ;
-      for (cubesizetype sz = plan_range_start; sz <= plan_range_end; sz *= 2) {
+      vector<cubesizetype> sizes ;
+      for (cubesizetype sz = plan_range_start; sz <= plan_range_end; sz *= 2)
+         sizes.push_back(sz) ;
+      int ntasks = (int)sizes.size() ;
+      vector<string> outbufs(ntasks) ;
+      vector<bool> ready(ntasks, false) ;
+      int next_to_print = 0 ;
+      mutex result_mu ;
+      auto worker = [&](int idx) {
+         cubesizetype sz = sizes[idx] ;
          cubesizetype My = (sz - 2) / 2 ;
          cubesizetype Mx = (sz - 2) - My ;
          cubesizetype pw = (phasewidth > 0) ? phasewidth : My ;
-         bestcostcache.clear() ;
-         bestcostplan.clear() ;
-         reductionplan.clear() ;
-         double cc = bestcost("000000", Mx, pw, useavg ? 'a' : 'w') ;
+         map<string,double> cache ;
+         map<string,reductionwplan> planmap ;
+         vector<reductionwplan> rplan ;
+         ostringstream oss ;
+         oss << setprecision(15) ;
+         double cc = bestcost("000000", Mx, pw, useavg ? 'a' : 'w', cache, planmap) ;
          if (pw != My)
             cc = cc * My / pw ;
-         cout << "N=" << sz << " Estimated " << costname << " cost is " << cc << endl ;
-         explain("000000") ;
-      }
+         oss << "N=" << sz << " Estimated " << costname << " cost is " << cc << "\n" ;
+         explain("000000", planmap, rplan, oss) ;
+         lock_guard<mutex> lk(result_mu) ;
+         outbufs[idx] = oss.str() ;
+         ready[idx] = true ;
+         while (next_to_print < ntasks && ready[next_to_print]) {
+            cout << outbufs[next_to_print] ;
+            outbufs[next_to_print].clear() ;
+            next_to_print++ ;
+         }
+         cout.flush() ;
+      } ;
+      int nthreads = min(ntasks, max(1, nprob_threads)) ;
+      atomic<int> next_idx{0} ;
+      vector<thread> threads ;
+      threads.reserve(nthreads) ;
+      for (int i = 0; i < nthreads; i++)
+         threads.emplace_back([&]() {
+            for (;;) {
+               int idx = next_idx.fetch_add(1) ;
+               if (idx >= ntasks) break ;
+               worker(idx) ;
+            }
+         }) ;
+      for (auto &t : threads)
+         t.join() ;
       exit(0) ;
    }
    cubesizetype My = (N - 2) / 2 ;

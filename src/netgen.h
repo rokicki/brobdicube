@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <utility>
 #include "xcube.h"
 #include "planmask.h"
@@ -647,7 +648,14 @@ void readalgs() ;
 extern std::map<std::string, double> bestcostcache ;
 extern std::map<std::string, reductionwplan> bestcostplan ;
 int splitby(const std::string &key, std::string &k2, std::string &k3) ;
+double bestcost(std::string key, cubesizetype Mx, cubesizetype My, char typ,
+                std::map<std::string,double> &cache,
+                std::map<std::string,reductionwplan> &planmap) ;
 double bestcost(std::string key, cubesizetype Mx, cubesizetype My, char typ) ;
 
 extern std::vector<reductionwplan> reductionplan ;
+void explain(std::string key,
+             const std::map<std::string,reductionwplan> &planmap,
+             std::vector<reductionwplan> &rplan,
+             std::ostream &out) ;
 void explain(std::string key) ;

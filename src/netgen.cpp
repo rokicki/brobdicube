@@ -317,7 +317,8 @@ int splitby(const string &key, string &k2, string &k3) {
    return 1 ;
 }
 
-double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ) {
+double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ,
+                map<string,double> &cache, map<string,reductionwplan> &planmap) {
    int cnt[6] ;
    for (int i=0; i<6; i++)
       cnt[i] = 0 ;
@@ -328,12 +329,12 @@ double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ) {
       if (key[i] != 'x' && cnt[key[i]-'0'] == 1)
          key[i] = 'x' ;
    auto ckey = canon(key) ;
-   if (bestcostcache.find(ckey) != bestcostcache.end())
-      return bestcostcache[ckey] ;
+   if (cache.find(ckey) != cache.end())
+      return cache[ckey] ;
    string k2, k3 ;
    if (!splitby(key, k2, k3))
       return 0 ;
-   auto remcost = bestcost(k3, Mx, My, typ) ;
+   auto remcost = bestcost(k3, Mx, My, typ, cache, planmap) ;
    auto ck2 = canon(k2) ;
    if (algset.find(ck2) == algset.end())
       error("! can't find any good continuations") ;
@@ -342,24 +343,29 @@ double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ) {
    for (auto netgp: algset[ck2]) {
       if (netgp->bad) continue ;
       auto t = netgp->cost(Mx, My, typ) ;
-      auto rem2 = bestcost(netgp->key, Mx, My, typ) + remcost ;
+      auto rem2 = bestcost(netgp->key, Mx, My, typ, cache, planmap) + remcost ;
       if (t.cost + rem2 < r) {
          r = t.cost + rem2 ;
          decomp = t ;
       }
    }
-   bestcostcache[ckey] = r ;
-   bestcostplan[ckey] = decomp ;
+   cache[ckey] = r ;
+   planmap[ckey] = decomp ;
    return r ;
+}
+
+double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ) {
+   return bestcost(key, Mx, My, typ, bestcostcache, bestcostplan) ;
 }
 
 vector<reductionwplan> reductionplan ;
 
-void explain(string key) {
+void explain(string key, const map<string,reductionwplan> &planmap,
+             vector<reductionwplan> &rplan, ostream &out) {
    while (1) {
       string k2, k3 ;
       if (key == "012345") {
-         cout << "Finished with key " << key << endl ;
+         out << "Finished with key " << key << "\n" ;
          return ;
       }
       if (!splitby(key, k2, k3)) {
@@ -367,9 +373,9 @@ void explain(string key) {
          error("! could not split key") ;
       }
       auto ckey = canon(k2) ;
-      if (bestcostplan.find(ckey) == bestcostplan.end())
+      if (planmap.find(ckey) == planmap.end())
          error("! internal error; no progression?") ;
-      auto plan = &bestcostplan[ckey] ;
+      const auto *plan = &planmap.at(ckey) ;
       string newkey(6, 0) ;
       int found = 0 ;
       int m ;
@@ -407,11 +413,11 @@ void explain(string key) {
       const char *mode = plan->net->optimal ? "optimal" : "greedy" ;
       if (plan->net->used_perms < 0)
          plan->net->plan() ;
-      cout << "Use " << newkey << " " << plan->net->filename << " [" << mode << "] cost " << plan->cost << " on " << key << " map " << m << " used " << plan->net->used_perms << "/" << plan->net->stringalgs.size() << endl ;
+      out << "Use " << newkey << " " << plan->net->filename << " [" << mode << "] cost " << plan->cost << " on " << key << " map " << m << " used " << plan->net->used_perms << "/" << plan->net->stringalgs.size() << "\n" ;
       netgen *f = plan->net ;
       if (m != 0)
          f = new netgen(f->key, f->stringalgs, f->filename, m, f->optimal) ;
-      reductionplan.push_back({plan->cost, f, plan->plan}) ;
+      rplan.push_back({plan->cost, f, plan->plan}) ;
       string k4(6, 0) ;
       remapper remap ;
       for (int i=0; i<6; i++)
@@ -421,4 +427,8 @@ void explain(string key) {
             k4[i] = remap.get(6+newkey[i]) ;
       swap(key, k4) ;
    }
+}
+
+void explain(string key) {
+   explain(key, bestcostplan, reductionplan, cout) ;
 }

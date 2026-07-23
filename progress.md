@@ -3265,3 +3265,139 @@ Loaded 121867 algs in 29.0s
 
 (Previously: `Loaded algs in 29.0s` with no count.)
 
+---
+
+## brobdicube: Multi-File Refactor (src/ Directory)
+
+### Extraction of netgen/planning system
+
+The monolithic `brobdicube.cpp` was split into separate compilation units.
+Following earlier extractions of `xcube`, `cornersolver`, and `wingsolver`,
+the netgen and planning subsystem was extracted into `src/netgen.h` and
+`src/netgen.cpp`.
+
+Files moved to `netgen.h` (all struct definitions inline, full `std::`
+qualification, no `using namespace std`):
+
+| Struct | Purpose |
+|--------|---------|
+| `blockalgo` | Single algorithm: move list, orbit permutation, vhoc cost |
+| `Stats` / `byphase` | Per-phase hit/move statistics |
+| `wplan` | Width-optimised plan (count1/w1 + count2/w2 partition of My) |
+| `reductionwplan` | One step of the reduction plan: cost + netgen* + wplan vector |
+| `remapper` | Canonical face-label renumbering |
+| `PackTables` | Shared pack/unpack tables for netgens with the same digit counts |
+| `netgen` | Core planner: greedy and optimal BFS, prob-cache I/O, `getplan`/`doplan` |
+
+Extern declarations in `netgen.h` for globals defined in `brobdicube.cpp`:
+`io_mutex`, `fast`, `writemoves`, `blocks`, `runningmovecount`, `algsdir`,
+`greedyonly`.  `static` was removed from `io_mutex` to give it external linkage.
+
+Functions defined in `netgen.cpp`: `oppositemoves`, `loadalgs`, `sendblock`,
+`doblock`, `canon`, `addgen`, `readalgs`, `bestcost`, `explain`, `optw`,
+`avcost`, `wccost`, `get_pack_tables` (with static `pack_cache_mu`/`pack_cache`
+remaining internal).
+
+### Source files moved to src/
+
+All source files needed to build the five targets were moved from the root to
+`src/` using `git mv`:
+
+```
+src/brobdicube.cpp   src/xcube.cpp        src/cornersolver.cpp
+src/wingsolver.cpp   src/netgen.cpp       src/util.cpp
+src/fpng.cpp         src/findpermnet.cpp  src/pareto.cpp
+src/algutil.cpp      src/test_planmask.cpp
+src/planmask.h       src/xorbit.h         src/mv.h
+src/util.h           src/threecube.h      src/xcube.h
+src/cornersolver.h   src/wingsolver.h     src/netgen.h
+src/fpng.h
+```
+
+The Makefile was updated to add `-Isrc` to `CXXFLAGS` and a `S := src`
+shorthand variable; all source paths updated to `$S/filename`.  The
+`-Isrc` flag means no `#include` statements needed to change — headers are
+still referenced by basename.
+
+---
+
+## collect_solutions.cpp: Correct v/h/o/c from Move Strings
+
+### Problem
+
+Filename fields like `000111-0069-0000-0138-0276-0260-hash.alg` had a wrong
+`-0000-` for the v (depth-3 inner move) field.  The root cause: per-candidate
+costs were decoded from a packed integer passed through the beam search log,
+whose encoding did not necessarily match the `v*10^12 + h*10^8 + o*10^4 + c`
+convention expected by `collect_solutions`.
+
+### Fix
+
+Added two helper functions:
+
+```cpp
+static std::string invert_tok(const std::string& t);
+static void compute_vhoc(const std::string& s,
+                         int& v, int& h, int& o, int& c);
+```
+
+`compute_vhoc` classifies each token in the move string:
+- Depth-3 prefix (`3x`) → v
+- Depth-2 prefix (`2x`) → h
+- Alphabetic-first → o
+- Leading/trailing inverse-pair peeling → c
+
+The output loop now calls `compute_vhoc` for each loaded move string and
+accumulates `true_v/h/o/c`, using these in the filename.  The packed-cost
+field from the log is used only as a fallback when the move string cannot be
+found (`any_missing = true`).
+
+---
+
+## brobdicube: Parallel -P Option
+
+### Problem
+
+The `-P start end` loop (which calls `bestcost` + `explain` for sizes
+`start, 2*start, 4*start, ...`) was serial.  The DP memo maps
+(`bestcostcache`, `bestcostplan`) were cleared between iterations and reused —
+correct for serial execution but preventing parallelism.
+
+### Fix
+
+**`bestcost` and `explain` now accept explicit map parameters:**
+
+```cpp
+double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ,
+                map<string,double> &cache,
+                map<string,reductionwplan> &planmap);
+
+void explain(string key,
+             const map<string,reductionwplan> &planmap,
+             vector<reductionwplan> &rplan,
+             ostream &out);
+```
+
+Old single-argument versions remain as wrappers using the globals, so the
+non-`-P` solve path (lines ~1072 and ~1081 of `brobdicube.cpp`) is unchanged.
+
+**Thread safety**: `algset` and all `netgen` objects are read-only after
+`preload_probs()` (all `used_perms >= 0`, `plans` cleared), so `netgen::cost()`
+is safe to call concurrently.  `explain()` only calls `plan->net->plan()` when
+`used_perms < 0` — never after preload.
+
+**Ordered output without waiting for all results:**
+
+Sizes are collected into a `vector<cubesizetype> sizes` upfront.  A pool of
+`min(ntasks, nprob_threads)` threads is spawned; each grabs an index atomically,
+computes into a local `ostringstream` (with private `cache`/`planmap`/`rplan`),
+then under `result_mu`:
+
+1. Deposits its buffered output into `outbufs[idx]` and sets `ready[idx] = true`.
+2. Drains all consecutive ready slots from `next_to_print` forward, printing
+   each block in order.
+3. Calls `cout.flush()`.
+
+This ensures output appears as soon as the earliest-pending N completes,
+without ever printing a later N before an earlier one.
+

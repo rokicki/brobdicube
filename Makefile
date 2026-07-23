@@ -1,7 +1,7 @@
 UNAME := $(shell uname)
 
 CXX      := g++
-CXXFLAGS := -march=native -Wall -Wsign-compare -g -std=c++20 -O3
+CXXFLAGS := -march=native -Wall -Wsign-compare -g -std=c++20 -O3 -Isrc
 
 ifeq ($(UNAME), Linux)
   LDFLAGS := -lpthread
@@ -9,24 +9,26 @@ else
   LDFLAGS :=
 endif
 
+S := src
+
 .PHONY: all clean
 
 all: brobdicube pareto findpermnet algutil test_planmask
 
-brobdicube: brobdicube.cpp xcube.cpp cornersolver.cpp wingsolver.cpp netgen.cpp util.cpp fpng.cpp
-	$(CXX) $(CXXFLAGS) -o $@ brobdicube.cpp xcube.cpp cornersolver.cpp wingsolver.cpp netgen.cpp util.cpp -w fpng.cpp $(LDFLAGS)
+brobdicube: $S/brobdicube.cpp $S/xcube.cpp $S/cornersolver.cpp $S/wingsolver.cpp $S/netgen.cpp $S/util.cpp $S/fpng.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $S/brobdicube.cpp $S/xcube.cpp $S/cornersolver.cpp $S/wingsolver.cpp $S/netgen.cpp $S/util.cpp -w $S/fpng.cpp $(LDFLAGS)
 
-pareto: pareto.cpp
+pareto: $S/pareto.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
-findpermnet: findpermnet.cpp
+findpermnet: $S/findpermnet.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
-algutil: algutil.cpp
+algutil: $S/algutil.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
-test_planmask: test_planmask.cpp planmask.h
-	$(CXX) $(CXXFLAGS) -o $@ test_planmask.cpp $(LDFLAGS)
+test_planmask: $S/test_planmask.cpp $S/planmask.h
+	$(CXX) $(CXXFLAGS) -o $@ $S/test_planmask.cpp $(LDFLAGS)
 
 clean:
 	rm -f brobdicube pareto findpermnet algutil test_planmask
