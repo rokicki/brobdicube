@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -61,6 +62,36 @@ static void flush_solution(Solution& sol, bool& in_found, std::vector<Solution>&
     sol = Solution();
 }
 
+// Compute v/h/o/c move-type counts directly from an algorithm text string.
+// Strips outer conjugate pairs (matching letter-move inverse pairs), then
+// classifies remaining moves: '3'→v, '2'→h, letter→o.
+static void compute_vhoc_from_text(const std::string &alg,
+                                    int &v, int &h, int &o, int &c) {
+    v = h = o = c = 0;
+    std::vector<std::string> toks;
+    std::istringstream iss(alg);
+    std::string tok;
+    while (iss >> tok) toks.push_back(tok);
+    int lo = 0, hi = (int)toks.size() - 1;
+    while (lo < hi) {
+        const auto &front = toks[lo];
+        const auto &back  = toks[hi];
+        if (!isalpha((unsigned char)front[0]) || !isalpha((unsigned char)back[0])) break;
+        std::string inv;
+        if (front.back() == '\'') inv = front.substr(0, front.size() - 1);
+        else if (front.back() == '2') inv = front;
+        else inv = front + "'";
+        if (inv != back) break;
+        c += 2; lo++; hi--;
+    }
+    for (int i = lo; i <= hi; i++) {
+        char d = toks[i][0];
+        if      (isalpha((unsigned char)d)) o++;
+        else if (d == '2')                   h++;
+        else if (d == '3')                   v++;
+    }
+}
+
 static void parse_stream(FILE* f, const std::string& source, std::vector<Solution>& out) {
     char buf[65536];
     Solution cur;
@@ -111,13 +142,15 @@ static void parse_stream(FILE* f, const std::string& source, std::vector<Solutio
             const char* colon = strchr(line, ':');
             if (colon && strncmp(colon + 1, " cost ", 6) == 0) {
                 char* p;
-                long long cost = strtoll(colon + 7, &p, 10);
+                strtoll(colon + 7, &p, 10);  // skip cost field; recompute from text
                 while (*p == ' ') ++p;
                 cur.algorithms.push_back(p);
-                cur.sum_v += cost / 1000000000LL;
-                cur.sum_h += (cost / 1000000LL) % 1000LL;
-                cur.sum_o += (cost / 1000LL) % 1000LL;
-                cur.sum_c += cost % 1000LL;
+                int cv = 0, ch = 0, co = 0, cc = 0;
+                compute_vhoc_from_text(p, cv, ch, co, cc);
+                cur.sum_v += cv;
+                cur.sum_h += ch;
+                cur.sum_o += co;
+                cur.sum_c += cc;
             }
         }
     }

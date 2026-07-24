@@ -73,39 +73,60 @@ struct planmask {
       return -1 ;
    }
 
-   // Sorted insert of i into fields[0..n-1]; writes to fields[n]. Returns n+1.
-   static int sorted_insert(int fields[], int n, int i) {
-      int pos = n ;
-      for (int k = 0; k < n; k++)
-         if (i < fields[k]) { pos = k ; break ; }
-      for (int k = n; k > pos; k--) fields[k] = fields[k-1] ;
-      fields[pos] = i ;
-      return n + 1 ;
-   }
-
-   planmask set(int i) const {
-      if (is_bitmask() && i < 60) return { w | (1ULL << i) } ; // fast path (idempotent)
+planmask set(int i) const {
+      if (is_bitmask()) {
+         if (i < 60) return { w | (1ULL << i) } ;   // fast path, idempotent
+         // i >= 60: must lift bitmask to compact; fall through
+      }
       if (is_none()) return none() ;
-      if (test(i)) return *this ; // already set, idempotent
-      int fields[61], n ; // up to 60 bitmask entries when lifting
-      int cur_m = mode() ;
-      if (cur_m == 0) {
+
+      int m = mode() ;
+
+      // Fast path for compact modes 1-5: append to first empty slot, no decode/encode.
+      // Caller guarantees values are inserted in increasing order with no duplicates
+      // (as the planning loops do).  Each mode packs ns slots of fw bits into bits
+      // 0..59; empty slots hold EMPTY_V = (1<<fw)-1 = all 1s in the field.
+      if (m >= 1 && m <= 5) {
+         int      fw  = FIELD_W[m] ;
+         uint32_t emp = EMPTY_V[m] ;
+
+         if ((uint32_t)i < emp) {           // i fits in current mode, no upgrade needed
+            // Count used slots: OR the high nybble (mode bits) to all 1s so they
+            // don't contribute a false 0 bit; the MSB 0 bit then lives in the last
+            // used slot (all empty slots above it, and the nybble, are all 1s).
+            uint64_t temp  = w | (0xFULL << 60) ;
+            int      count = (temp == ~0ULL) ? 0
+                           : (63 - __builtin_clzll(~temp)) / fw + 1 ;
+
+            if (count >= N_SLOTS[m]) return none() ;
+
+            // Append i at slot `count` (the first empty slot).
+            // Empty slot holds emp = (1<<fw)-1.  Replace it with i by subtraction:
+            //   emp - (emp - i) = i, no borrow into adjacent slots since emp >= i.
+            return { w - ((uint64_t)(emp - (uint32_t)i) << (count * fw)) } ;
+         }
+         // i too large for mode m → need mode upgrade; fall through to slow path
+      }
+
+      // Slow path: full decode → sorted_insert → encode (mode change or legacy mode).
+      int fields[61], n ;
+      if (m == 0) {
          n = 0 ;
-         for (int k = 0; k < 60; k++)
-            if ((w >> k) & 1) fields[n++] = k ;     // lift bitmask indices
+         for (uint64_t bits = w & DATA_MASK; bits; bits &= bits - 1)
+            fields[n++] = __builtin_ctzll(bits) ;
       } else {
          n = decode(fields) ;
       }
       int new_m ;
       if (i < 511) {
-         // Legacy (8) preferred for small indices; stay compact if already there.
-         new_m = (cur_m >= 1 && cur_m <= 5) ? cur_m : 8 ;
+         new_m = (m >= 1 && m <= 5) ? m : 8 ;
       } else {
-         int base = (cur_m >= 1 && cur_m <= 5) ? cur_m : 0 ;
+         int base = (m >= 1 && m <= 5) ? m : 0 ;
          new_m = std::max(base, req_compact(i)) ;
       }
       if (new_m < 0 || n >= N_SLOTS[new_m]) return none() ;
-      return encode(new_m, fields, sorted_insert(fields, n, i)) ;
+      fields[n] = i ;
+      return encode(new_m, fields, n + 1) ;
    }
 
    bool test(int i) const {

@@ -117,6 +117,9 @@ static void check_pair(const char *label, planmask pm, ref_planmask rm) {
    }
 }
 
+// test_sequence requires indices to be sorted and duplicate-free (matching set()'s
+// contract for compact modes: increasing order, each value at most once).
+// Idempotency is only tested for bitmask mode, where OR is inherently idempotent.
 static void test_sequence(const char *label, const std::vector<int> &indices) {
    planmask pm ;
    ref_planmask rm ;
@@ -127,7 +130,7 @@ static void test_sequence(const char *label, const std::vector<int> &indices) {
       ref_planmask rm2 = rm.set(idx) ;
       snprintf(buf, sizeof(buf), "%s[%d] insert(%d)", label, i, idx) ;
       check_pair(buf, pm2, rm2) ;
-      if (!pm2.is_none()) {
+      if (!pm2.is_none() && pm2.is_bitmask()) {
          snprintf(buf, sizeof(buf), "%s[%d] idempotent(%d)", label, i, idx) ;
          check_pair(buf, pm2.set(idx), rm2.set(idx)) ;
       }
@@ -187,6 +190,9 @@ static void run_random_trial(std::mt19937_64 &rng, long trial) {
       int bucket = (int)(rng() % N_BUCKETS) ;
       seq.push_back((int)(rng() % ((uint64_t)BUCKET_MAX[bucket] + 1))) ;
    }
+   // set() requires values in increasing order with no duplicates (compact mode contract).
+   std::sort(seq.begin(), seq.end()) ;
+   seq.erase(std::unique(seq.begin(), seq.end()), seq.end()) ;
    char label[128] ;
    snprintf(label, sizeof(label), "rnd_t%ld", trial) ;
    test_sequence(label, seq) ;
