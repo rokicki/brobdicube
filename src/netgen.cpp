@@ -154,15 +154,14 @@ wplan avcost(ll cost, cubesizetype Mx, cubesizetype My, double prob) {
          p1 *= ratio ;
       }
       byw.push_back(t) ;
+      t += c * -expm1(Mx * (double)w * log1p(prob)) ;
       if ((Mx >> (w + 1)) == 0)
          break ;
       if (byw.size() > 2 && t > byw[byw.size()-2])
          break ;
       qpow *= q ;
    }
-   auto r = optw(byw, My) ;
-   r.cost += c ;
-   return r ;
+   return optw(byw, My) ;
 }
 
 wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {

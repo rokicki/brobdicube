@@ -213,6 +213,14 @@ struct PackTables {
       for (int th=0; th<halfmod; th++)
          sortme[th] = {digsums[th], th} ;
       std::sort(sortme.begin(), sortme.end()) ;
+      // For base 3, encode each half-index in 2-bit-per-trit format so the hot
+      // planning loop can extract groups with v & 255 / v >>= 8 (same as base 4).
+      // ntrits = log3(halfmod) = 2*nonx trits per half-state.
+      auto encode2bpt = [&](int val) -> ll {
+         ll r = 0 ;
+         for (int i = 0; i < 2*nonx; i++) { r |= (ll)(val % 3) << (2*i) ; val /= 3 ; }
+         return r ;
+      } ;
       int bw = halfmod - 1 ;
       for (int thi=0; thi<halfmod; thi++) {
          while (bw >= 0 && sortme[bw].first + sortme[thi].first >= diggoal)
@@ -222,7 +230,10 @@ struct PackTables {
                packhi[sortme[thi].second] = at ;
             if (packlo[sortme[bhi].second] == -1)
                packlo[sortme[bhi].second] = at - packhi[sortme[thi].second] ;
-            unpack.push_back(sortme[thi].second * (ll)halfmod + sortme[bhi].second) ;
+            ll u = (base == 3)
+               ? (encode2bpt(sortme[thi].second) << (4*nonx)) | encode2bpt(sortme[bhi].second)
+               : sortme[thi].second * (ll)halfmod + sortme[bhi].second ;
+            unpack.push_back(u) ;
             at++ ;
          }
       }
@@ -333,15 +344,17 @@ struct netgen {
       return r ;
    }
    int build_fast_tab(const xorbit &xo, ll tab[][256]) const {
-      const int base4 = base * base * base * base ;
+      // For base 3 we store 4 trits as 2 bits each (values 0-255, same as base 4).
+      const int tab_size = (base == 3) ? 256 : base * base * base * base ;
       int ng = 0 ;
       for (int f = 0; f < 6; f++) {
          if (tolowdig[4*f] < 0) continue ;
-         for (int val = 0; val < base4; val++) {
+         for (int val = 0; val < tab_size; val++) {
             ll contrib = 0 ; int tmp = val ;
             for (int di = 0; di < 4; di++) {
-               contrib += pt->basepow[tolowdig[xo.a[4*f + di]]] * (tmp % base) ;
-               tmp /= base ;
+               int trit = (base == 3) ? (tmp & 3) : (tmp % base) ;
+               contrib += pt->basepow[tolowdig[xo.a[4*f + di]]] * trit ;
+               if (base == 3) tmp >>= 2 ; else tmp /= base ;
             }
             tab[ng][val] = contrib ;
          }
@@ -402,7 +415,7 @@ struct netgen {
       const bool pow2base = !(base & (base - 1)) ;
       const int hmshift = pow2base ? __builtin_ctz(halfmod) : 0 ;
       const int hmmask  = halfmod - 1 ;
-      bool plan_warned = false ;
+      ll min_overflow_nc = LLONG_MAX ;
       for (int i=0; i<STAGE && covered < goal; i++) {
          ll tab[6][256] ;
          int ng = build_fast_tab(algs[i].perm, tab) ;
@@ -412,12 +425,7 @@ struct netgen {
             planmask newplan = plans[j].set(i) ;
             ll nc = curcost[j] + algs[i].cost ;
             if (newplan.is_none()) {
-               if (!plan_warned && plans[d].is_none()) {
-                  std::lock_guard<std::mutex> lk(io_mutex) ;
-                  std::cerr << "Warning: planmask overflow in " << key
-                       << " alg " << i << "; greedy plan may be incomplete\n" ;
-                  plan_warned = true ;
-               }
+               if (nc < min_overflow_nc) min_overflow_nc = nc ;
                return ;
             }
             if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
@@ -432,8 +440,8 @@ struct netgen {
          } else if (base == 3) {
             for (int j=0; j<goal; j++)
                if (!plans[j].is_none()) {
-                  ll v = pt->unpack[j] ; ll k = 0 ;
-                  for (int g=0; g<ng; g++) { k += tab[g][v % 81] ; v /= 81 ; }
+                  uint64_t v = pt->unpack[j] ; ll k = 0 ;
+                  for (int g=0; g<ng; g++) { k += tab[g][v & 255] ; v >>= 8 ; }
                   update(j, pt->packhi[k/halfmod] + pt->packlo[k%halfmod]) ;
                }
          } else { // base == 2
@@ -450,6 +458,18 @@ struct netgen {
                curcost[j] = nextcost[j] ;
                covered++ ;
             }
+      }
+      if (min_overflow_nc != LLONG_MAX) {
+         ll max_cost = 0 ;
+         for (int j = 0; j < goal; j++)
+            if (curcost[j] != LLONG_MAX && curcost[j] > max_cost)
+               max_cost = curcost[j] ;
+         if (max_cost > min_overflow_nc) {
+            std::lock_guard<std::mutex> lk(io_mutex) ;
+            std::cerr << "Warning: planmask overflow in " << key
+                 << "; greedy plan may be suboptimal (min overflow cost "
+                 << min_overflow_nc << ", max reached cost " << max_cost << ")\n" ;
+         }
       }
       finish_plan() ;
       if (goal > 100000) {
@@ -472,7 +492,7 @@ struct netgen {
       const bool pow2base = !(base & (base - 1)) ;
       const int hmshift = pow2base ? __builtin_ctz(halfmod) : 0 ;
       const int hmmask  = halfmod - 1 ;
-      bool plan_warned = false ;
+      ll min_overflow_nc = LLONG_MAX ;
       for (int i=0; i<STAGE; i++) {
          ll tab[6][256] ;
          int ng = build_fast_tab(algs[i].perm, tab) ;
@@ -482,12 +502,7 @@ struct netgen {
             planmask newplan = plans[j].set(i) ;
             ll nc = curcost[j] + algs[i].cost ;
             if (newplan.is_none()) {
-               if (!plan_warned && nc < curcost[d]) {
-                  std::lock_guard<std::mutex> lk(io_mutex) ;
-                  std::cerr << "Warning: planmask overflow in " << key
-                       << " alg " << i << "; optimal plan may be suboptimal\n" ;
-                  plan_warned = true ;
-               }
+               if (nc < min_overflow_nc) min_overflow_nc = nc ;
                return ;
             }
             if (nc < nextcost[d]) { nextcost[d] = nc ; next[d] = newplan ; }
@@ -502,8 +517,8 @@ struct netgen {
          } else if (base == 3) {
             for (int j=0; j<goal; j++)
                if (!plans[j].is_none()) {
-                  ll v = pt->unpack[j] ; ll k = 0 ;
-                  for (int g=0; g<ng; g++) { k += tab[g][v % 81] ; v /= 81 ; }
+                  uint64_t v = pt->unpack[j] ; ll k = 0 ;
+                  for (int g=0; g<ng; g++) { k += tab[g][v & 255] ; v >>= 8 ; }
                   update(j, pt->packhi[k/halfmod] + pt->packlo[k%halfmod]) ;
                }
          } else { // base == 2
@@ -519,6 +534,18 @@ struct netgen {
                plans[j] = next[j] ;
                curcost[j] = nextcost[j] ;
             }
+      }
+      if (min_overflow_nc != LLONG_MAX) {
+         ll max_cost = 0 ;
+         for (int j = 0; j < goal; j++)
+            if (curcost[j] != LLONG_MAX && curcost[j] > max_cost)
+               max_cost = curcost[j] ;
+         if (max_cost > min_overflow_nc) {
+            std::lock_guard<std::mutex> lk(io_mutex) ;
+            std::cerr << "Warning: planmask overflow in " << key
+                 << "; optimal plan may be suboptimal (min overflow cost "
+                 << min_overflow_nc << ", max reached cost " << max_cost << ")\n" ;
+         }
       }
       finish_plan() ;
       if (goal > 100000) {
