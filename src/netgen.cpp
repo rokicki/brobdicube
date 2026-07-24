@@ -157,8 +157,6 @@ wplan avcost(ll cost, cubesizetype Mx, cubesizetype My, double prob) {
       t += c * -expm1(Mx * (double)w * log1p(prob)) ;
       if ((Mx >> (w + 1)) == 0)
          break ;
-      if (byw.size() > 2 && t > byw[byw.size()-2])
-         break ;
       qpow *= q ;
    }
    return optw(byw, My) ;
@@ -174,8 +172,6 @@ wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {
       double t = (v * Mx + h * w * (1LL << w) * 0.5 + o * ((1LL << w) - 1)) ;
       byw.push_back(t) ;
       if ((Mx >> (w + 1)) == 0)
-         break ;
-      if (byw.size() > 2 && t > byw[byw.size()-2])
          break ;
    }
    auto r = optw(byw, My) ;
