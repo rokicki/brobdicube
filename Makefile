@@ -9,30 +9,46 @@ else
   LDFLAGS :=
 endif
 
-S := src
+DEPDIR := .deps
+$(shell mkdir -p $(DEPDIR))
+
+# -MMD -MP: auto-generate .d dep files alongside compilation.
+# -MF names each dep file after the binary target it belongs to.
+DEPFLAGS = -MMD -MP -MF $(DEPDIR)/$@.d
 
 .PHONY: all clean
 
 all: brobdicube pareto findpermnet algutil test_planmask
 
-brobdicube: $S/brobdicube.cpp $S/xcube.cpp $S/cornersolver.cpp $S/wingsolver.cpp $S/netgen.cpp $S/util.cpp $S/fpng.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $S/brobdicube.cpp $S/xcube.cpp $S/cornersolver.cpp $S/wingsolver.cpp $S/netgen.cpp $S/util.cpp -w $S/fpng.cpp $(LDFLAGS)
+BROBD_SRCS := src/brobdicube.cpp src/xcube.cpp src/cornersolver.cpp \
+              src/wingsolver.cpp src/netgen.cpp src/util.cpp src/fpng.cpp
 
-pareto: $S/pareto.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+H_FILES := src/cornersolver.h src/fpng.h src/mv.h src/netgen.h src/planmask.h \
+           src/threecube.h src/util.h src/wingsolver.h src/xcube.h src/xorbit.h
 
-findpermnet: $S/findpermnet.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+brobdicube: $(BROBD_SRCS) $(H_FILES)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -o $@ \
+	    src/brobdicube.cpp src/xcube.cpp src/cornersolver.cpp src/wingsolver.cpp \
+	    src/netgen.cpp src/util.cpp -w src/fpng.cpp $(LDFLAGS)
 
-algutil: $S/algutil.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+pareto: src/pareto.cpp
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -o $@ $< $(LDFLAGS)
 
-test_planmask: $S/test_planmask.cpp $S/planmask.h
-	$(CXX) $(CXXFLAGS) -o $@ $S/test_planmask.cpp $(LDFLAGS)
+findpermnet: src/findpermnet.cpp
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -o $@ $< $(LDFLAGS)
+
+algutil: src/algutil.cpp
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -o $@ $< $(LDFLAGS)
+
+test_planmask: src/test_planmask.cpp
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -o $@ $< $(LDFLAGS)
+
+-include $(DEPDIR)/brobdicube.d $(DEPDIR)/pareto.d $(DEPDIR)/findpermnet.d \
+         $(DEPDIR)/algutil.d $(DEPDIR)/test_planmask.d
 
 clean:
 	rm -f brobdicube pareto findpermnet algutil test_planmask
-	rm -rf test
+	rm -rf test $(DEPDIR)
 ifeq ($(UNAME), Darwin)
 	rm -rf brobdicube.dSYM pareto.dSYM findpermnet.dSYM algutil.dSYM
 endif
