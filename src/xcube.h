@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <strings.h>
 #include <vector>
 #include <string>
 #include <iostream>
