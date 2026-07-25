@@ -298,6 +298,9 @@ static void usage(const char* prog) {
               << "  -k N       max activations per state; beam sorts by\n"
               << "            coverage first then sum-of-squares of activation\n"
               << "            counts. Default 0 = disabled.\n"
+              << "  -I         only accept candidates that strictly increase\n"
+              << "            coverage; scan all candidates each step until\n"
+              << "            one is found. Intended for use with -w 1 -k.\n"
               << "  -v         verbose candidate parsing\n"
               << "\n"
               << "Permutation mode input (stdin), 0-based positions:\n"
@@ -1001,10 +1004,9 @@ static ScoreResult score_candidate(
         }
 
         if (!uncovered_ranks.empty()) {
-            // Inverse mode: iterate uncovered states, check if preimage is a
-            // valid source (covered + not skip + not saturated).  Improvements
-            // to already-covered states are skipped here (secondary, rare at
-            // high coverage).
+            // Inverse mode (high coverage): iterate uncovered states and test
+            // whether their preimage under inv_lut is in the covered set.
+            // Improvements to already-covered states are not tracked here.
             const size_t n = uncovered_ranks.size();
             for (size_t i = 0; i < n; ++i) {
                 if (i + PF_DIST < n)
@@ -1014,7 +1016,8 @@ static ScoreResult score_candidate(
                 State s = ranker.unrank(r2);
                 State pre = apply_lut(s, ce.inv_lut, codec);
                 uint32_t r0 = ranker.rank(pre);
-                if (r0 == BAD_RANK || r0 == mat.ext.init_rank) continue;
+                if (r0 == BAD_RANK) continue;
+                if (r0 == mat.ext.init_rank) continue;  // handled by init block
                 if (!test_bit(mat.covered, r0)) continue;
                 uint8_t c0 = mat.ext.best_count.get(r0);
                 if (c0 == 0u || c0 >= (uint8_t)max_act_limit) continue;
@@ -1024,14 +1027,14 @@ static ScoreResult score_candidate(
                 delta_sq += (int64_t)new_c * new_c;
             }
         } else {
-            // Forward mode: covered_ranks already filtered to val ∈ [1, k).
+            // Forward mode: covered_ranks filtered to val ∈ [1, k).
             const size_t n = covered_ranks.size();
             for (size_t i = 0; i < n; ++i) {
                 if (i + PF_DIST < n)
                     __builtin_prefetch(
                         &ranker.state_of_rank[covered_ranks[i + PF_DIST]], 0, 0);
                 uint32_t r0 = covered_ranks[i];
-                uint8_t c0 = mat.ext.best_count.get(r0); // safety guard path
+                uint8_t c0 = mat.ext.best_count.get(r0);
                 if (c0 == 0u || c0 >= (uint8_t)max_act_limit) continue;
                 State s2 = apply_lut(ranker.unrank(r0), ce.lut, codec);
                 uint32_t r2 = ranker.rank(s2);
@@ -1754,6 +1757,7 @@ struct RunParams {
     bool final_completion_mode;
     int suffix_depth;
     int num_threads;
+    bool improve_only = false;  // -I: only accept coverage-improving candidates
     std::string key;   // brobdicube key if algorithm-input mode, else ""
     Codec codec;
     State init_state;
@@ -1792,7 +1796,8 @@ static int run_beam(RunParams& p) {
               << " suffix_depth=" << p.suffix_depth
               << " max_act=" << max_act_limit
               << " cheapest_suffix=1"
-              << " stream_trim=1" << "\n";
+              << " stream_trim=1"
+              << " improve_only=" << (p.improve_only ? 1 : 0) << "\n";
 
     MaterializedState<M> start_mat = make_start_materialized<M>(p.init_state, p.ranker);
     BeamState<M> start;
@@ -1947,44 +1952,46 @@ static int run_beam(RunParams& p) {
                         const MaterializedState<M>& mat = beam_mats[bi];
                         std::vector<uint32_t> covered_ranks, uncovered_ranks;
                         if constexpr (M) {
-                            // Collect non-skip valid sources: val ∈ [1, k).
-                            // The initial state (val=0) is handled separately
-                            // inside score_candidate via init_rank.
-                            covered_ranks.reserve(mat.cover_count);
-                            const uint8_t klim = (uint8_t)max_act_limit;
-                            uint32_t nw = (p.ranker.total + 63u) >> 6;
-                            for (uint32_t w = 0; w < nw; ++w) {
-                                uint64_t bits = mat.covered[w];
-                                while (bits) {
-                                    uint32_t b = static_cast<uint32_t>(
-                                        __builtin_ctzll(bits));
-                                    uint32_t r = w * 64u + b;
-                                    uint8_t v = mat.ext.best_count.get(r);
-                                    if (v != 0u && v < klim)
-                                        covered_ranks.push_back(r);
-                                    bits &= bits - 1;
-                                }
-                            }
-                            // Use inverse when uncovered set is smaller.
-                            uint32_t uncov =
-                                p.ranker.total - mat.cover_count;
-                            if (uncov < (uint32_t)covered_ranks.size())
+                            // Use inverse mode only when uncovered states are
+                            // a small fraction (<10%) of total — inverse mode
+                            // iterates uncovered states, forward iterates
+                            // filtered covered sources (val ∈ [1, k)).
+                            // Switching too early (e.g. at 50%) makes things
+                            // slower because filtered covered << uncovered.
+                            if ((p.ranker.total - mat.cover_count) * 10 <
+                                    p.ranker.total) {
                                 uncovered_ranks = extract_uncovered_ranks(
                                     mat.covered, p.ranker.total);
+                            } else {
+                                const uint8_t klim = (uint8_t)max_act_limit;
+                                covered_ranks.reserve(mat.cover_count);
+                                uint32_t nw = (p.ranker.total + 63u) >> 6;
+                                for (uint32_t w = 0; w < nw; ++w) {
+                                    uint64_t bits = mat.covered[w];
+                                    while (bits) {
+                                        uint32_t b = static_cast<uint32_t>(
+                                            __builtin_ctzll(bits));
+                                        uint32_t r = w * 64u + b;
+                                        uint8_t v = mat.ext.best_count.get(r);
+                                        if (v != 0u && v < klim)
+                                            covered_ranks.push_back(r);
+                                        bits &= bits - 1;
+                                    }
+                                }
+                            }
                         } else if (mat.cover_count * 2 > p.ranker.total)
                             uncovered_ranks = extract_uncovered_ranks(
                                 mat.covered, p.ranker.total);
                         else
                             covered_ranks = extract_covered_ranks(
                                 mat.covered, p.ranker.total);
-                        std::vector<int> trial_candidates =
-                            choose_branch_candidates(p.branches,
-                            static_cast<int>(p.perms.size()),
-                            p.cost_buckets, local_rng);
-                        for (int ci : trial_candidates) {
+                        auto score_and_maybe_add = [&](int ci) {
                             ScoreResult sr = score_candidate<M>(
                                 mat, covered_ranks, uncovered_ranks, ci,
                                 p.ranker, p.codec, lut_cache);
+                            if (p.improve_only &&
+                                    sr.cover_count <= mat.cover_count)
+                                return;
                             BeamState<M> child;
                             child.seq = st.seq;
                             child.seq.push_back(ci);
@@ -1997,6 +2004,29 @@ static int run_beam(RunParams& p) {
                             maybe_add_child<M>(res.children,
                                 std::move(child), local_limit, local_threshold,
                                 have_local_worst, local_worst);
+                        };
+                        if (!p.improve_only) {
+                            std::vector<int> trial_candidates =
+                                choose_branch_candidates(p.branches,
+                                static_cast<int>(p.perms.size()),
+                                p.cost_buckets, local_rng);
+                            for (int ci : trial_candidates)
+                                score_and_maybe_add(ci);
+                        } else {
+                            // -I mode: repeatedly draw random branch-sized
+                            // batches until one yields an improving child.
+                            const int pool =
+                                static_cast<int>(p.perms.size());
+                            while (res.children.empty()) {
+                                const size_t before = res.children.size();
+                                auto batch = choose_branch_candidates(
+                                    p.branches, pool,
+                                    p.cost_buckets, local_rng);
+                                for (int ci : batch)
+                                    score_and_maybe_add(ci);
+                                if (res.children.size() > before)
+                                    break;
+                            }
                         }
                     }
                     sort_and_trim_to<M>(res.children, local_limit);
@@ -2127,6 +2157,7 @@ int main(int argc, char** argv) {
                 .count());
         bool verbose = false;
         bool final_completion_mode = false;
+        bool improve_only = false;
         int suffix_depth = 0;
         int num_threads = (int)std::thread::hardware_concurrency();
         std::string init;
@@ -2162,6 +2193,7 @@ int main(int argc, char** argv) {
             }
             else if (a == "-t") num_threads = std::stoi(need_arg("-t"));
             else if (a == "-k") max_act_limit = std::stoi(need_arg("-k"));
+            else if (a == "-I") improve_only = true;
             else if (a == "-v") verbose = true;
             else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
             else throw std::runtime_error("unknown argument: " + a);
@@ -2246,6 +2278,7 @@ int main(int argc, char** argv) {
         p.perms = std::move(perms);
         p.cost_buckets = std::move(cost_buckets);
         p.lut_cache_budget_per_thread = lut_cache_budget_per_thread;
+        p.improve_only = improve_only;
 
         if (max_act_limit > 0) return run_beam<true>(p);
         else return run_beam<false>(p);
