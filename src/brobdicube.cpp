@@ -64,6 +64,7 @@ string algsdir = "./algs3" ;
 static double start ;
 mutex io_mutex ;
 static int nprob_threads = (int)thread::hardware_concurrency() ;
+static int nprob_threads_set_by_user = 0 ;
 static bool describealgorithms = false ;
 double walltime() {
    struct timeval tv ;
@@ -1008,6 +1009,7 @@ case 't':
          argc-- ;
          argv++ ;
          nprob_threads = atoi(argv[0]) ;
+         nprob_threads_set_by_user = 1 ;
          break ;
 default:
          if (strcmp(argv[0], "--describealgorithms") == 0) {
@@ -1016,6 +1018,12 @@ default:
          }
          error("! option not understood") ;
       }
+   }
+   if (writemoves && nprob_threads > 1) {
+      if (nprob_threads_set_by_user)
+         cerr << "WARNING: -o (emit moves) requires single-threaded solving; "
+                 "ignoring -t " << nprob_threads << " and using 1 thread." << endl ;
+      nprob_threads = 1 ;
    }
    if (!fast)
       nprob_threads = 1 ;
