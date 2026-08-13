@@ -267,6 +267,8 @@ struct netgen {
    bool bad = false ;
    int used_perms = -1 ;
    int max_activations_seen = -1 ;
+   // Guards the lazy-init in cost() below; see the comment there.
+   std::mutex cost_mu ;
    netgen(std::string key_, const std::vector<std::string> &stringalgs_, const std::string &filename_, int m_=0, bool optimal_=false) {
       optimal = optimal_ ;
       m = m_ ;
@@ -645,13 +647,26 @@ struct netgen {
       return computed ;
    }
    reductionwplan cost(cubesizetype Mx, cubesizetype My, char typ) {
+      // cost() is called on shared netgen objects from every -P worker
+      // thread concurrently.  Normally preload_probs() has already warmed
+      // stageprob/algcosts for every netgen before any of those threads
+      // start, so the lazy-init below never actually mutates anything here.
+      // But nothing enforces that invariant, so guard it for real:
+      // double-checked locking makes ensureprobs()/ensure_algs_loaded()
+      // safe even if two threads reach a not-yet-warmed netgen at once.
+      if (typ == 'a' && stageprob.size() == 0) {
+         std::lock_guard<std::mutex> lk(cost_mu) ;
+         if (stageprob.size() == 0)
+            ensureprobs() ;
+      }
+      if (algcosts.empty()) {
+         std::lock_guard<std::mutex> lk(cost_mu) ;
+         if (algcosts.empty())
+            ensure_algs_loaded() ;
+      }
       reductionwplan r ;
       r.cost = 0 ;
       r.net = this ;
-      if (typ == 'a' && stageprob.size() == 0)
-         ensureprobs() ;
-      if (algcosts.empty())
-         ensure_algs_loaded() ;
       for (int i=0; i<(int)algcosts.size(); i++) {
          wplan rr ;
          if (typ == 'a')
