@@ -128,6 +128,13 @@ ll doblock(xcube &cube, blockalgo &alg, vector<int> &ys, vector<int> &xs) {
 
 vector<Stats> byphase ;
 
+// MAXW bounds the widths optw may choose from.  It cannot be raised much: the
+// solver allocates and scans 2^w entries per strip per stage (see the
+// prv.assign(1LL << w, ...) / bp < (1LL << w) loops in brobdicube.cpp), so w is
+// exponential in both time and memory there, and w >= 63 in a long long shift
+// is outright undefined behaviour.
+static const int MAXW = 24 ;
+
 wplan optw(const vector<double> &byw, cubesizetype My) {
    wplan r = {INFCOST, -1, -1LL, -1LL, -1, -1, byw} ;
    r.plan(My) ;
@@ -154,7 +161,15 @@ wplan avcost(ll cost, cubesizetype Mx, cubesizetype My, double prob) {
          p1 *= ratio ;
       }
       byw.push_back(t) ;
-      if ((Mx >> (w + 1)) == 0)
+      // Enumerate every width and let optw choose.  The previous cap here was
+      // (Mx >> (w + 1)) == 0, i.e. stop at w == lg(Mx).  That is where pattern
+      // reuse across the Mx columns saturates, so for large Mx it costs nothing
+      // -- but a wider strip also amortizes the per-strip costs over more rows,
+      // and when Mx is small that second effect is still paying off well past
+      // lg(Mx).  At Mx = 9 the cap left optw unable to consider anything above
+      // w = 3.  Only two hard bounds remain: a strip wider than My is
+      // meaningless, and MAXW bounds the work per call.
+      if ((cubesizetype)w >= My || w >= MAXW)
          break ;
       qpow *= q ;
    }
@@ -174,9 +189,14 @@ wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {
    int o = cost / 10000 % 10000 ;
    int c = cost % 10000 ;
    for (int w=1; ; w++) {
-      double t = (v * Mx + h * w * (1LL << w) * 0.5 + o * ((1LL << w) - 1)) ;
+      // 2^w as a double: it overflows a long long long before it overflows a
+      // double, and the old (Mx >> (w + 1)) == 0 bound let w reach 63 for a
+      // large enough Mx, where 1LL << w is undefined behaviour.  Bound w the
+      // same way avcost does instead.
+      double tw = ldexp(1.0, w) ;
+      double t = (v * (double)Mx + h * w * tw * 0.5 + o * (tw - 1)) ;
       byw.push_back(t) ;
-      if ((Mx >> (w + 1)) == 0)
+      if ((cubesizetype)w >= My || w >= MAXW)
          break ;
    }
    auto r = optw(byw, My) ;

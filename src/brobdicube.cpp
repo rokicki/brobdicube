@@ -29,6 +29,23 @@ using lll = __int128_t ;
 // estimates up to about 10^34 or so (until something overflows).
 // But this may hurt performance, so by default we leave it at ll.
 using cubesizetype = ll ;
+
+// The solver allocates and scans 2^w entries per strip per stage, so the strip
+// width is exponential in both time and memory here.  optw is capped by MAXW in
+// netgen.cpp, but that cap is a backstop rather than a design point, so shout if
+// a real solve ever runs a width anywhere near it.  Only a new worst width
+// warns, so this stays quiet after the first report.
+static void warn_wide_strip(int w) {
+   static std::atomic<int> worst{19} ;
+   int prev = worst.load(std::memory_order_relaxed) ;
+   while (w > prev &&
+          !worst.compare_exchange_weak(prev, w, std::memory_order_relaxed))
+      ;
+   if (w > prev)
+      std::cerr << "WARNING: strip width w=" << w << " needs " << (1LL << w)
+                << " pattern slots per strip per stage" << std::endl ;
+}
+
 static cubesizetype atocsz(const char *s) {
    cubesizetype r = 0 ;
    int neg = (*s == '-') ; if (neg) s++ ;
@@ -450,6 +467,7 @@ case 18: SH(rot4,4,2,1,2,2,2,3,2); SV(rot4,4,3,1,3,2,3,3,3); break;
             ll ii = 0 ;
             for (ll iii = 0; iii < (ll)(wplan.count1 + wplan.count2); iii++) {
                int w = iii < wplan.count1 ? wplan.w1 : wplan.w2 ;
+               warn_wide_strip(w) ;
                bits.assign((size_t)cube.Mx, 0) ;
                for (int wi = 0; wi < w; wi++)
                   for (ll j = 0; j < (ll)cube.Mx; j++)
@@ -649,6 +667,7 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
                ll ii = 0 ;
                for (ll iii=0; iii<(ll)(wplan.count1 + wplan.count2); iii++) {
                   int w = iii < wplan.count1 ? wplan.w1 : wplan.w2 ;
+                  warn_wide_strip(w) ;
                   bits.clear() ;
                   bits.resize((size_t)cube.Mx) ;
                   for (int wi=0; wi<w; wi++)
