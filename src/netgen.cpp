@@ -154,12 +154,17 @@ wplan avcost(ll cost, cubesizetype Mx, cubesizetype My, double prob) {
          p1 *= ratio ;
       }
       byw.push_back(t) ;
-      t += c * -expm1(Mx * (double)w * log1p(prob)) ;
       if ((Mx >> (w + 1)) == 0)
          break ;
       qpow *= q ;
    }
-   return optw(byw, My) ;
+   auto r = optw(byw, My) ;
+   // The conjugation wrapper cancels between successive applications of the
+   // same stage (the stage loop is outside the inner w-striping), so it is
+   // paid once per stage that actually fires, independent of w.  Add it after
+   // optw so it cannot distort the width choice.  wccost is the prob=1 limit.
+   r.cost += c * -expm1((double)Mx * (double)My * log1p(-prob)) ;
+   return r ;
 }
 
 wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {
