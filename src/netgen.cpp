@@ -161,15 +161,18 @@ wplan avcost(ll cost, cubesizetype Mx, cubesizetype My, double prob) {
          p1 *= ratio ;
       }
       byw.push_back(t) ;
-      // Enumerate every width and let optw choose.  The previous cap here was
-      // (Mx >> (w + 1)) == 0, i.e. stop at w == lg(Mx).  That is where pattern
-      // reuse across the Mx columns saturates, so for large Mx it costs nothing
-      // -- but a wider strip also amortizes the per-strip costs over more rows,
-      // and when Mx is small that second effect is still paying off well past
-      // lg(Mx).  At Mx = 9 the cap left optw unable to consider anything above
-      // w = 3.  Only two hard bounds remain: a strip wider than My is
-      // meaningless, and MAXW bounds the work per call.
-      if ((cubesizetype)w >= My || w >= MAXW)
+      // A strip wider than My is meaningless.
+      if ((cubesizetype)w >= My)
+         break ;
+      // (Mx >> (w + 1)) == 0 means w has reached lg(Mx), where the pattern
+      // space 2^w overtakes the Mx columns and reuse across columns saturates.
+      // Widening past that still helps, by amortizing the per-strip costs over
+      // more rows -- which matters when Mx is small, and is why we go past it
+      // at all (at Mx = 9 the old cap left optw stuck at w = 3).  MAXW bounds
+      // only that excursion.  It must never bound w below lg(Mx): w ~ lg(Mx) is
+      // what makes the move count n^2/lg n rather than n^2, and there 2^w ~ Mx,
+      // so the solver's 2^w pattern table is merely linear in the cube size.
+      if (w >= MAXW && (Mx >> (w + 1)) == 0)
          break ;
       qpow *= q ;
    }

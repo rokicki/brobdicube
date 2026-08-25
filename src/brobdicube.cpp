@@ -31,10 +31,14 @@ using lll = __int128_t ;
 using cubesizetype = ll ;
 
 // The solver allocates and scans 2^w entries per strip per stage, so the strip
-// width is exponential in both time and memory here.  optw is capped by MAXW in
-// netgen.cpp, but that cap is a backstop rather than a design point, so shout if
-// a real solve ever runs a width anywhere near it.  Only a new worst width
-// warns, so this stays quiet after the first report.
+// width is exponential in both time and memory here.  MAXW in netgen.cpp does
+// NOT protect us: it only bounds how far past lg(Mx) optw may reach, because
+// clipping w below lg(Mx) would destroy the n^2/lg n move count.  So for a large
+// enough cube optw will legitimately return a width no machine can allocate --
+// fine while we are only estimating, fatal if we actually try to solve.  Call
+// this at the allocation, not where w is chosen, so it cannot drift away from
+// the thing it guards.  Only a new worst width warns, so it stays quiet after
+// the first report.
 static void warn_wide_strip(int w) {
    static std::atomic<int> worst{19} ;
    int prev = worst.load(std::memory_order_relaxed) ;
@@ -467,12 +471,12 @@ case 18: SH(rot4,4,2,1,2,2,2,3,2); SV(rot4,4,3,1,3,2,3,3,3); break;
             ll ii = 0 ;
             for (ll iii = 0; iii < (ll)(wplan.count1 + wplan.count2); iii++) {
                int w = iii < wplan.count1 ? wplan.w1 : wplan.w2 ;
-               warn_wide_strip(w) ;
                bits.assign((size_t)cube.Mx, 0) ;
                for (int wi = 0; wi < w; wi++)
                   for (ll j = 0; j < (ll)cube.Mx; j++)
                      if (movemasks[(size_t)(ii + wi)][(size_t)j].test(pi))
                         bits[(size_t)j] |= 1LL << wi ;
+               warn_wide_strip(w) ;
                prv.assign(1LL << w, -1) ;
                nxt.resize((size_t)cube.Mx) ;
                for (ll i = 0; i < (ll)cube.Mx; i++) {
@@ -667,7 +671,6 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
                ll ii = 0 ;
                for (ll iii=0; iii<(ll)(wplan.count1 + wplan.count2); iii++) {
                   int w = iii < wplan.count1 ? wplan.w1 : wplan.w2 ;
-                  warn_wide_strip(w) ;
                   bits.clear() ;
                   bits.resize((size_t)cube.Mx) ;
                   for (int wi=0; wi<w; wi++)
@@ -675,6 +678,7 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
                         if (movemasks[(size_t)(ii+wi)][(size_t)j].test(pi))
                            bits[(size_t)j] |= 1LL<<wi ;
                   prev.clear() ;
+                  warn_wide_strip(w) ;
                   prev.resize(1LL<<w, -1) ;
                   next.resize((size_t)cube.Mx) ;
                   for (ll i=0; i<(ll)cube.Mx; i++) {
