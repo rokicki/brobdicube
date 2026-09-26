@@ -357,9 +357,9 @@ case 18: SH(rot4,4,2,1,2,2,2,3,2); SV(rot4,4,3,1,3,2,3,3,3); break;
             for (int f = 0; f < 6; f++) {
                switch (fr[f] & 3) {
                case 0: break ;
-               case 1: orb.rot4(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
+               case 1: orb.rot4i(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
                case 2: orb.rot2(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
-               case 3: orb.rot4i(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
+               case 3: orb.rot4(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
                }
             }
       for (int f = 0; f < 6; f++) fr[f] = 0 ;

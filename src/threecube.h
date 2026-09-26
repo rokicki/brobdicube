@@ -174,32 +174,32 @@ case 5: // D
 case 6: // 2U
             edge.rot4(19, 15, 11, 7) ;
             edge.rot4(17, 13, 9, 5) ;
-            rot4c(4, 3, 2, 1) ;
+            rot4c(1, 2, 3, 4) ;
             break ;
 case 7: // 2L
             edge.rot4(0, 8, 20, 18) ;
             edge.rot4(2, 10, 22, 16) ;
-            rot4c(0, 2, 5, 4) ;
+            rot4c(4, 5, 2, 0) ;
             break ;
 case 8: // 2F
             edge.rot4(1, 14, 23, 4) ;
             edge.rot4(3, 12, 21, 6) ;
-            rot4c(0, 3, 5, 1) ;
+            rot4c(1, 5, 3, 0) ;
             break ;
 case 9: // 2R
             edge.rot4(18, 20, 8, 0) ;
             edge.rot4(16, 22, 10, 2) ;
-            rot4c(4, 5, 2, 0) ;
+            rot4c(0, 2, 5, 4) ;
             break ;
 case 10: // 2B
             edge.rot4(4, 23, 14, 1) ;
             edge.rot4(6, 21, 12, 3) ;
-            rot4c(1, 5, 3, 0) ;
+            rot4c(0, 3, 5, 1) ;
             break ;
 case 11: // 2D
             edge.rot4(7, 11, 15, 19) ;
             edge.rot4(5, 9, 13, 17) ;
-            rot4c(1, 2, 3, 4) ;
+            rot4c(4, 3, 2, 1) ;
             break ;
          }
       }

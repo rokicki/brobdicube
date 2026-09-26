@@ -71,9 +71,9 @@ struct xcube {
          for (auto &row: rows)
             for (auto &xo: row) {
                switch (facerots[f]) {
-                  case 1: xo.rot4(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
+                  case 1: xo.rot4i(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
                   case 2: xo.rot2(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
-                  case 3: xo.rot4i(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
+                  case 3: xo.rot4(4*f, 4*f+1, 4*f+2, 4*f+3) ; break ;
                }
             }
          facerots[f] = 0 ;
