@@ -440,7 +440,7 @@ void explain(string key, const map<string,reductionwplan> &planmap,
       const char *mode = plan->net->optimal ? "optimal" : "greedy" ;
       if (plan->net->used_perms < 0)
          plan->net->plan() ;
-      out << "Use " << newkey << " " << plan->net->filename << " [" << mode << "] cost " << plan->cost << " on " << key << " map " << m << " used " << plan->net->used_perms << "/" << plan->net->stringalgs.size() << "\n" ;
+      out << "Use " << newkey << " " << plan->net->filename.substr(plan->net->filename.find_last_of('/') + 1) << " [" << mode << "] cost " << plan->cost << " on " << key << " map " << m << " used " << plan->net->used_perms << "/" << plan->net->stringalgs.size() << "\n" ;
       netgen *f = plan->net ;
       if (m != 0)
          f = new netgen(f->key, f->stringalgs, f->filename, m, f->optimal) ;

@@ -827,7 +827,7 @@ void usage() {
       "-v n    write a png file of the cube state every n moves." << endl <<
 #endif
       "-w      optimize plan for worst-case, not average, solves." << endl <<
-      "-D dir  set the algs directory (default: ./algs3)." << endl <<
+      "-D dir  set the algs directory (default: algs3 beside the executable, else ./algs3)." << endl <<
       "-t n    use n threads for probability cache precomputation (default: hardware_concurrency)." << endl <<
       "--describealgorithms" << endl <<
       "        for each loaded algorithm file, print (greedy and optimal separately):" << endl <<
@@ -887,7 +887,7 @@ void describe_algorithms() {
          lock_guard<mutex> lk(io_mutex) ;
          cout << mode
               << " key=" << ng->key
-              << " file=" << ng->filename
+              << " file=" << ng->filename.substr(ng->filename.find_last_of('/') + 1)
               << " depth=" << depth
               << " avg_act=" << avg_act
               << " max_act=" << ng->max_activations_seen
@@ -959,6 +959,20 @@ int main(int argc, char *argv[]) {
    for (int i=0; i<argc; i++)
       cout << " " << argv[i] ;
    cout << endl ;
+   {  // default algs directory: algs3 beside the executable as named on the
+      // command line (argv[0]); ./algs3 when that has no directory part or no
+      // algs3 there.  -D overrides.  No environment lookups.
+      string a0 = argv[0] ;
+      size_t k = a0.find_last_of('/') ;
+      if (k != string::npos) {
+         string d = a0.substr(0, k+1) + "algs3" ;
+         DIR *dp = opendir(d.c_str()) ;
+         if (dp) {
+            closedir(dp) ;
+            algsdir = d ;
+         }
+      }
+   }
    while (argc > 1 && argv[1][0] == '-') {
       argc-- ;
       argv++ ;
