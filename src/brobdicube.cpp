@@ -87,6 +87,27 @@ mutex io_mutex ;
 static int nprob_threads = (int)thread::hardware_concurrency() ;
 static int nprob_threads_set_by_user = 0 ;
 static bool describealgorithms = false ;
+/*
+ *   Default phase width.  Pick the largest strip count that doesn't exceed
+ *   the thread count and keeps every strip at least log2(My+1)^2 wide (so
+ *   we don't crowd the optimal solution widths), then spread My evenly over
+ *   those strips.  My/log2(My+1)^2 is nondecreasing wherever it is >= 1, so
+ *   the strip count grows monotonically with My.
+ */
+cubesizetype default_phasewidth(cubesizetype My) {
+   if (My <= 1)
+      return My ;
+   double lg = log2((double)My + 1) ;
+   ll nstrips = (ll)floor((double)My / (lg * lg)) ;
+   nstrips = min(nstrips, (ll)max(1, nprob_threads)) ;
+   if (nstrips < 1)
+      nstrips = 1 ;
+   ll pw = ((ll)My + nstrips - 1) / nstrips ;
+   // even out the strips across the threads we'll actually use
+   nstrips = ((ll)My + pw - 1) / pw ;
+   pw = ((ll)My + nstrips - 1) / nstrips ;
+   return (cubesizetype)pw ;
+}
 double walltime() {
    struct timeval tv ;
    gettimeofday(&tv, 0) ;
@@ -571,6 +592,8 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
          }
       }
       ll num_strips = ((ll)cube.My + (ll)phasewidth - 1) / (ll)phasewidth ;
+      if (extrapolate)   // match the serial path: solve only the first strip
+         num_strips = 1 ;
       atomic<ll> next_si{0} ;
       atomic<ll> total_mvs{0} ;
       atomic<ll> total_cancellations{0} ;
@@ -816,7 +839,8 @@ void usage() {
       "-R      scramble with an auto-picked length (50*N) random moves." << endl <<
       "-M n    do this many solves and report aggregate stats." << endl <<
       "-o      write solution to stdout (on lines starting with a space)." << endl <<
-      "-p n    set the phase chunking width." << endl <<
+      "-p n    set the phase chunking width (default: at most one strip per\n"
+      "        thread, each at least log2(My+1)^2 wide)." << endl <<
       "-s      actually (slowly) simulate moves; for testing." << endl <<
       "-x      extrapolate statistics from a single strip." << endl <<
       "-a x y  select first phase of length x and second phase of length y." << endl << 
@@ -1099,7 +1123,7 @@ default:
          cubesizetype sz = sizes[idx] ;
          cubesizetype My = (sz - 2) / 2 ;
          cubesizetype Mx = (sz - 2) - My ;
-         cubesizetype pw = (phasewidth > 0) ? phasewidth : My ;
+         cubesizetype pw = (phasewidth > 0) ? phasewidth : default_phasewidth(My) ;
          map<string,double> cache ;
          map<string,reductionwplan> planmap ;
          vector<reductionwplan> rplan ;
@@ -1139,7 +1163,7 @@ default:
    cubesizetype My = (N - 2) / 2 ;
    cubesizetype Mx = (N - 2) - My ;
    if (phasewidth <= 0)
-      phasewidth = My ;
+      phasewidth = default_phasewidth(My) ;
    if (extrapolate)
       extrapolatemul = My / (double)phasewidth ;
    if (!fast || writemoveinc || randmoves || (readmoves && nprob_threads <= 1))
