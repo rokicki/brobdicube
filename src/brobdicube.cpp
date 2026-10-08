@@ -73,13 +73,23 @@ ll wingmoves = 0 ;
 int extrapolate = 0 ;
 int stats = 0 ;
 double extrapolatemul = 1 ;
+// With -x, the whole cube is planned (algorithm choice and the strip widths
+// w1/w2 with their counts for all My rows), a sample of those width blocks is
+// solved inside the first phasewidth rows, and each stage's sampled cost is
+// scaled up by (blocks of that width in the full plan) / (blocks sampled).
+// extrapmoves holds that estimate of the full-cube center move count.
+double extrapmoves = 0 ;
 ll solvecount = 1 ;
+ll userseed = -1 ;     // -z: deterministic scrambles when >= 0
+ll solveindex = 0 ;    // which solve (of -M) we are on, for seeding
 cubesizetype N ;
 cubesizetype phasewidth = -1 ;
 int planonly = 0 ;
 int useavg = 1 ;
 int greedyonly = 0 ;
 cubesizetype plan_range_start = 0, plan_range_end = 0 ;
+int plan_from_stdin = 0 ;   // -P list: read the sizes to plan from stdin
+int fullwidth = 0 ;         // -p max: one strip of all My rows
 string algsdir = "./algs3" ;
 #include "util.h"
 static double start ;
@@ -464,6 +474,12 @@ case 18: SH(rot4,4,2,1,2,2,2,3,2); SV(rot4,4,3,1,3,2,3,3,3); break;
                   const vector<mv> *norm_mvs = nullptr,
                   const vector<mv> *prep_before = nullptr,
                   const vector<mv> *prep_after = nullptr) {
+      // With -z, scramble each strip from a seed that depends only on the
+      // user seed, the solve number and the strip, so results do not depend
+      // on how strips are scheduled across threads.
+      if (userseed >= 0)
+         local_rng.seed(mixseed((uint64_t)userseed, (uint64_t)solveindex,
+                                (uint64_t)strip_start)) ;
       ll r = 0 ;
       if (!alwaysinmem) {
          if (norm_mvs)
@@ -530,6 +546,34 @@ case 18: SH(rot4,4,2,1,2,2,2,3,2); SV(rot4,4,3,1,3,2,3,3,3); break;
       return r ;
    }
 } ;
+/*
+ *   For -x: pick how many blocks of each width of the full-cube plan wp to
+ *   solve within the pw sampled rows, keeping at least one block of each
+ *   width that the full plan uses, and the factor that scales each sampled
+ *   block up to all blocks of its width.
+ */
+void extrapsample(const wplan &wp, ll pw, ll &s1, ll &s2,
+                  double &mul1, double &mul2) {
+   ll c1 = wp.count1, c2 = wp.count2 ;
+   if (c1 * wp.w1 + c2 * wp.w2 <= pw) {
+      s1 = c1 ;
+      s2 = c2 ;
+   } else {
+      double f = pw / (double)(c1 * wp.w1 + c2 * wp.w2) ;
+      s1 = c1 > 0 ? max(1LL, (ll)floor(c1 * f)) : 0 ;
+      s2 = c2 > 0 ? max(1LL, (ll)floor(c2 * f)) : 0 ;
+      while (s1 * wp.w1 + s2 * wp.w2 > pw) {
+         if (s1 > 1 && (s1 * wp.w1 >= s2 * wp.w2 || s2 <= 1))
+            s1-- ;
+         else if (s2 > 1)
+            s2-- ;
+         else
+            error("! -x strip too narrow for the full-cube plan; increase -p") ;
+      }
+   }
+   mul1 = s1 ? c1 / (double)s1 : 0 ;
+   mul2 = s2 ? c2 / (double)s2 : 0 ;
+}
 ll solve(xcube &cube, cubesizetype phasewidth) {
    if (phasewidth > cube.My)
       phasewidth = cube.My ;
@@ -576,7 +620,7 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
       r += do_wing_cycles(cube) ;
    }
    if (streaming) g_prep_recorder = nullptr ;
-   if (fast && nprob_threads > 1) {
+   if (fast && nprob_threads > 1 && !extrapolate) {
       for (auto &f : reductionplan)
          f.net->plan() ;
       // Pre-normalize moveset for streaming replay (readmoves + parallel only)
@@ -676,7 +720,11 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
             for (int pi=f.net->STAGE-1; pi>=0; pi--, phasebase++) {
                auto &alg = f.net->algs[pi] ;
                auto &wplan = f.plan[pi] ;
-               wplan.plan((cubesizetype)pw) ;
+               wplan.plan(extrapolate ? cube.My : (cubesizetype)pw) ;
+               ll s1 = wplan.count1, s2 = wplan.count2 ;
+               double mul1 = 1, mul2 = 1 ;
+               if (extrapolate)
+                  extrapsample(wplan, pw, s1, s2, mul1, mul2) ;
                if (phasebase >= (int)byphase.size()) {
                   byphase.resize(phasebase+1) ;
                   byphase[phasebase].w1 = wplan.w1 ;
@@ -692,8 +740,9 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
                   cout << endl ;
                }
                ll ii = 0 ;
-               for (ll iii=0; iii<(ll)(wplan.count1 + wplan.count2); iii++) {
-                  int w = iii < wplan.count1 ? wplan.w1 : wplan.w2 ;
+               for (ll iii=0; iii<s1 + s2; iii++) {
+                  int w = iii < s1 ? wplan.w1 : wplan.w2 ;
+                  double mul = iii < s1 ? mul1 : mul2 ;
                   bits.clear() ;
                   bits.resize((size_t)cube.Mx) ;
                   for (int wi=0; wi<w; wi++)
@@ -726,6 +775,7 @@ ll solve(xcube &cube, cubesizetype phasewidth) {
                               f.net->doplan(planmask{}.set(pi), cube.rows[y][x]) ;
                      byphase[phasebase].moves += mvs ;
                      r += mvs ;
+                     extrapmoves += mvs * mul ;
                   }
                   ii += w ;
                }
@@ -755,6 +805,9 @@ ll dosolve(cubesizetype N, cubesizetype phasewidth) {
    cubesizetype Mx = (N - 2) - My ;
    blocks = 0 ;
    cancellations = 0 ;
+   extrapmoves = 0 ;
+   if (userseed >= 0)
+      rng.seed(mixseed((uint64_t)userseed, (uint64_t)solveindex, ~0ULL)) ;
    xcube cube(Mx, My, (readmoves || randmoves) ? 'I' : 'R') ;
    int fr[6] ; 
    for (int f=0; f<6; f++) { 
@@ -789,7 +842,6 @@ ll dosolve(cubesizetype N, cubesizetype phasewidth) {
 struct basicstat {
    basicstat(const char *n_) : name(n_), n(0), sx(0), sxx(0), hi(0), lo(0) {}
    void add(double x) {
-      x *= extrapolatemul ;
       n++ ;
       if (n == 1)
          hi = lo = x ;
@@ -818,10 +870,10 @@ void fullreport(ll at) {
    cancelstat.avreport() ; cout << " " ;
    blockstat.avreport() ; cout << endl;
 }
-void addcounts(ll v) {
+void addcounts(double v) {
    mvstat.add(v)  ;
-   cancelstat.add(cancellations) ;
-   blockstat.add(blocks) ;
+   cancelstat.add(cancellations * extrapolatemul) ;
+   blockstat.add(blocks * extrapolatemul) ;
    if (solvecount > 1 && (mvstat.n & (mvstat.n - 1)) == 0 && mvstat.n != solvecount)
       fullreport(mvstat.n) ;
 }
@@ -840,9 +892,15 @@ void usage() {
       "-M n    do this many solves and report aggregate stats." << endl <<
       "-o      write solution to stdout (on lines starting with a space)." << endl <<
       "-p n    set the phase chunking width (default: at most one strip per\n"
-      "        thread, each at least log2(My+1)^2 wide)." << endl <<
+      "        thread, each at least log2(My+1)^2 wide); -p max plans the\n"
+      "        whole cube as one strip of all rows." << endl <<
+      "-P a b  only estimate costs, for sizes a, 2a, 4a, ... up to b." << endl <<
+      "-P list same, for the sizes read from stdin." << endl <<
       "-s      actually (slowly) simulate moves; for testing." << endl <<
-      "-x      extrapolate statistics from a single strip." << endl <<
+      "-x      estimate a whole-cube center solve from one strip of -p rows:\n"
+      "        plan for the whole cube, solve a sample of its width blocks,\n"
+      "        and scale each stage up (wings are skipped)." << endl <<
+      "-z n    seed the scramble generator with n (reproducible runs)." << endl <<
       "-a x y  select first phase of length x and second phase of length y." << endl << 
       "-S      show stats for each phase separately." << endl <<
       "-g      use only greedy planning (skip optimal)." << endl <<
@@ -1025,7 +1083,10 @@ case 'w':
 case 'p':
          argc-- ;
          argv++ ;
-         phasewidth = atocsz(argv[0]) ;
+         if (strcmp(argv[0], "max") == 0)
+            fullwidth = 1 ;
+         else
+            phasewidth = atocsz(argv[0]) ;
          break ;
 case 'M':
          argc-- ;
@@ -1050,12 +1111,25 @@ case 'r':
          argv++ ;
          randmoves = atoll(argv[0]) ;
          break ;
+case 'z':
+         argc-- ;
+         argv++ ;
+         userseed = atoll(argv[0]) ;
+         if (userseed < 0)
+            error("! seed must be nonnegative") ;
+         rng.seed(mixseed((uint64_t)userseed, ~0ULL, ~0ULL)) ;
+         break ;
 case 'R':
          randmoves = -1 ;   // auto-pick length
          break ;
 case 'P':
          argc-- ;
          argv++ ;
+         if (strcmp(argv[0], "list") == 0) {
+            plan_from_stdin = 1 ;
+            plan_range_start = 1 ;
+            break ;
+         }
          plan_range_start = atocsz(argv[0]) ;
          argc-- ;
          argv++ ;
@@ -1112,8 +1186,18 @@ default:
    if (plan_range_start > 0) {
       const char *costname = useavg ? "average" : "worst-case" ;
       vector<cubesizetype> sizes ;
-      for (cubesizetype sz = plan_range_start; sz <= plan_range_end; sz *= 2)
-         sizes.push_back(sz) ;
+      if (plan_from_stdin) {
+         string tok ;
+         while (cin >> tok) {
+            cubesizetype sz = atocsz(tok.c_str()) ;
+            if (sz < 4)
+               error("! -P list sizes must be at least 4") ;
+            sizes.push_back(sz) ;
+         }
+      } else {
+         for (cubesizetype sz = plan_range_start; sz <= plan_range_end; sz *= 2)
+            sizes.push_back(sz) ;
+      }
       int ntasks = (int)sizes.size() ;
       vector<string> outbufs(ntasks) ;
       vector<bool> ready(ntasks, false) ;
@@ -1123,7 +1207,8 @@ default:
          cubesizetype sz = sizes[idx] ;
          cubesizetype My = (sz - 2) / 2 ;
          cubesizetype Mx = (sz - 2) - My ;
-         cubesizetype pw = (phasewidth > 0) ? phasewidth : default_phasewidth(My) ;
+         cubesizetype pw = fullwidth ? My
+                         : (phasewidth > 0) ? phasewidth : default_phasewidth(My) ;
          map<string,double> cache ;
          map<string,reductionwplan> planmap ;
          vector<reductionwplan> rplan ;
@@ -1162,6 +1247,8 @@ default:
    }
    cubesizetype My = (N - 2) / 2 ;
    cubesizetype Mx = (N - 2) - My ;
+   if (fullwidth)
+      phasewidth = My ;
    if (phasewidth <= 0)
       phasewidth = default_phasewidth(My) ;
    if (extrapolate)
@@ -1170,13 +1257,15 @@ default:
       alwaysinmem = 1 ;
    if ((readmoves || writemoves || writemoveinc) && solvecount > 1)
       error("! cannot write frames and read or write moves, or do multiple solves at the same time") ;
-   double cc = bestcost("000000", Mx, phasewidth, useavg ? 'a' : 'w') ;
+   // -x plans for the whole cube; a normal solve plans per phasewidth strip.
+   cubesizetype planheight = extrapolate ? My : phasewidth ;
+   double cc = bestcost("000000", Mx, planheight, useavg ? 'a' : 'w') ;
    if (randmoves)
       random_move_scramble(N, randmoves) ;
    else if (readmoves)
       readmoveset() ;
-   else if (phasewidth != My)
-      cc = cc * My / phasewidth ;
+   else if (planheight != My)
+      cc = cc * My / planheight ;
    cout << "Estimated " << (useavg ? "average" : "worst-case") << " cost is " << cc << endl ;
    reductionplan.clear() ;
    explain("000000") ;
@@ -1184,8 +1273,9 @@ default:
       exit(0) ;
    ll mmc = 0 ;
    for (ll ii=1; ii<=solvecount; ii++) {
+      solveindex = ii - 1 ;
       ll t = dosolve(N, phasewidth) ;
-      addcounts(t) ;
+      addcounts(extrapolate ? extrapmoves : (double)t) ;
       mmc += t ;
    }
    if (solvecount == 1) {
@@ -1194,8 +1284,8 @@ default:
          if (stats)
             for (int i=0; i<(int)byphase.size(); i++)
                byphase[i].showstats(i, My*phasewidth) ;
-         lll lll_r = (lll)r * My / phasewidth ;
- cout << "r " << r << " My " << My << " lll_r " << lll_r << endl ;
+         lll lll_r = (lll)llround(extrapmoves) ;
+         cout << "strip moves " << r << " My " << My << endl ;
          lll lll_cancellations = (lll)cancellations * My / phasewidth ;
          lll lll_blocks = (lll)blocks * My / phasewidth ;
          cout << "N " << N << " width " << phasewidth

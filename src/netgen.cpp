@@ -1,5 +1,6 @@
 #include "netgen.h"
 #include <cmath>
+#include <sstream>
 using namespace std ;
 
 #if WRITEFRAMES
@@ -199,7 +200,9 @@ wplan wccost(ll cost, cubesizetype Mx, cubesizetype My) {
       double tw = ldexp(1.0, w) ;
       double t = (v * (double)Mx + h * w * tw * 0.5 + o * (tw - 1)) ;
       byw.push_back(t) ;
-      if ((cubesizetype)w >= My || w >= MAXW)
+      // As in avcost, MAXW may only stop w once it has reached lg(Mx);
+      // capping w below that makes the worst case grow like n^2 again.
+      if ((cubesizetype)w >= My || (w >= MAXW && (Mx >> (w + 1)) == 0))
          break ;
    }
    auto r = optw(byw, My) ;
@@ -445,6 +448,21 @@ void explain(string key, const map<string,reductionwplan> &planmap,
       if (m != 0)
          f = new netgen(f->key, f->stringalgs, f->filename, m, f->optimal) ;
       rplan.push_back({plan->cost, f, plan->plan}) ;
+      // Strip widths chosen for this step's stages, as multisets of widths
+      // (w^c means width w used c times) with the number of stages using each.
+      map<string,int> widthuse ;
+      for (auto &wp : plan->plan) {
+         ostringstream ws ;
+         if (wp.count1 > 0)
+            ws << wp.w1 << "^" << wp.count1 ;
+         if (wp.count2 > 0)
+            ws << (wp.count1 > 0 ? "," : "") << wp.w2 << "^" << wp.count2 ;
+         widthuse[ws.str()]++ ;
+      }
+      out << "Widths" ;
+      for (auto &wu : widthuse)
+         out << " {" << wu.first << "}x" << wu.second ;
+      out << "\n" ;
       string k4(6, 0) ;
       remapper remap ;
       for (int i=0; i<6; i++)
