@@ -86,7 +86,7 @@ cubesizetype N ;
 cubesizetype phasewidth = -1 ;
 int planonly = 0 ;
 int useavg = 1 ;
-int greedyonly = 0 ;
+int greedyonly = 0, optimalonly = 0 ;
 cubesizetype plan_range_start = 0, plan_range_end = 0 ;
 int plan_from_stdin = 0 ;   // -P list: read the sizes to plan from stdin
 int fullwidth = 0 ;         // -p max: one strip of all My rows
@@ -904,6 +904,7 @@ void usage() {
       "-a x y  select first phase of length x and second phase of length y." << endl << 
       "-S      show stats for each phase separately." << endl <<
       "-g      use only greedy planning (skip optimal)." << endl <<
+      "-O      use only optimal planning (skip greedy)." << endl <<
       "-show_wings print the edge permutations of the scrambled cube." << endl << 
 #if WRITEFRAMES
       "-v n    write a png file of the cube state every n moves." << endl <<
@@ -1074,6 +1075,9 @@ case 'S':
 case 'g':
          greedyonly = 1 ;
          break ;
+case 'O':
+         optimalonly = 1 ;
+         break ;
 case 'd':
          showdetails = 1 ;
          break ;
@@ -1160,6 +1164,8 @@ default:
                  "ignoring -t " << nprob_threads << " and using 1 thread." << endl ;
       nprob_threads = 1 ;
    }
+   if (greedyonly && optimalonly)
+      error("! -g and -O cannot be used together") ;
    if (!fast)
       nprob_threads = 1 ;
    expandrotations() ;
@@ -1218,7 +1224,35 @@ default:
          if (pw != My)
             cc = cc * My / pw ;
          oss << "N=" << sz << " Estimated " << costname << " cost is " << cc << "\n" ;
-         explain("000000", planmap, rplan, oss) ;
+         ostringstream eoss ;
+         eoss << setprecision(15) ;
+         explain("000000", planmap, rplan, eoss) ;
+         // The worst case of the chosen plan again, in exact integers: the
+         // double above is rounded beyond 15 digits (and beyond 2^53).  Per
+         // stage, as wccost(): count1 strips of width w1 and count2 of w2,
+         // a strip of width w costing v Mx + h w 2^(w-1) + o (2^w - 1),
+         // plus the stage's conjugation cost c.
+         if (!useavg && pw == My) {
+            lll ex = 0 ;
+            for (auto &rp : rplan) {
+               rp.net->cost(Mx, My, 'w') ;      // loads algcosts if needed
+               for (int i=0; i<(int)rp.plan.size(); i++) {
+                  ll cost = rp.net->algcosts[i] ;
+                  lll v = cost / 1000000000000LL, h = cost / 100000000 % 10000 ;
+                  lll o = cost / 10000 % 10000, c = cost % 10000 ;
+                  auto byw = [&](int w) -> lll {
+                     if (w <= 0)
+                        return 0 ;
+                     lll tw = (lll)1 << w ;
+                     return v * Mx + h * w * (tw / 2) + o * (tw - 1) ;
+                  } ;
+                  const wplan &wp = rp.plan[i] ;
+                  ex += (lll)wp.count1 * byw(wp.w1) + (lll)wp.count2 * byw(wp.w2) + c ;
+               }
+            }
+            oss << "Exact worst-case cost is " << ex << "\n" ;
+         }
+         oss << eoss.str() ;
          lock_guard<mutex> lk(result_mu) ;
          outbufs[idx] = oss.str() ;
          ready[idx] = true ;

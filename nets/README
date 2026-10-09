@@ -1,0 +1,23 @@
+Fixed networks for brobdicube -D (copies of the files in ../algs3):
+  W61   the worst-case planner's 61-stage network (n >= 2^24; at 2^19..2^23
+        it uses the other 001111-0024 variant, 33e26fff...)
+  A61a  the average planner's 61-stage network at n ~ 10^7 .. 10^8
+  A61b  the average planner's 61-stage network at n >= ~10^8
+With only these files brobdicube can still choose orientations, widths and
+(unless -g / -O) greedy or optimal planning per phase.
+
+  P72   permnet72 (the separate permnet72 solver): net241212 (32 stages, splits U L F from
+        R B D) and net12444 (20 stages) for each half, 72 stages in all.
+        Made from permnet72 -d, which prints each stage's move sequence in
+        the order applied; a file lists stage 0 first, so each network's
+        sequences are in reverse print order.  The name is
+        key-stages-v-h-o-c-hash (v/h/o/c as brobdicube counts them, hash =
+        FNV-1a of the lines, as pareto.cpp; only an identifier).
+        Checks (2026-10-09): every solve of n = 4..11, -g and -O, -p 1 and
+        64, replays as solved in tests/cubesim.py; with -g the per-stage
+        usage probabilities equal permnet72's exactly.  With -O the mean
+        number of stages equals permnet72 -m's (9.0041 outer, 6.3682 inner)
+        but ties between equally short plans are broken differently, so the
+        per-stage probabilities differ.  The two inner files have the same
+        canonical key, so brobdicube uses the cheaper one (rotated) for both
+        halves, where permnet72 uses its own sequences for each half.

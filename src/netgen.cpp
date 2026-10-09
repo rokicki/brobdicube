@@ -307,8 +307,10 @@ void readalgs() {
             algs.push_back(inpline) ;
       }
       fclose(f) ;
-      netgen *gen_greedy = new netgen(key, algs, filepath, 0, false) ;
-      addgen(key, gen_greedy) ;
+      if (!optimalonly) {
+         netgen *gen_greedy = new netgen(key, algs, filepath, 0, false) ;
+         addgen(key, gen_greedy) ;
+      }
       if (!greedyonly) {
          netgen *gen_optimal = new netgen(key, algs, filepath, 0, true) ;
          addgen(key, gen_optimal) ;
@@ -381,6 +383,11 @@ double bestcost(string key, cubesizetype Mx, cubesizetype My, char typ,
    }
    cache[ckey] = r ;
    planmap[ckey] = decomp ;
+   // explain() looks the step up by the split (k2), not the whole key; the
+   // best choice for k2 alone is the same (same candidates, same remcost).
+   auto ck2full = canon(k2) ;
+   if (planmap.find(ck2full) == planmap.end())
+      planmap[ck2full] = decomp ;
    return r ;
 }
 

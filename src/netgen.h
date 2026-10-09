@@ -16,7 +16,7 @@ extern std::mutex io_mutex ;
 extern int fast, writemoves ;
 extern ll blocks, runningmovecount ;
 extern std::string algsdir ;
-extern int greedyonly ;
+extern int greedyonly, optimalonly ;
 
 double walltime() ;
 double duration() ;
